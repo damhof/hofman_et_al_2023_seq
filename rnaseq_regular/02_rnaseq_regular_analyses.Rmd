@@ -1,0 +1,377 @@
+---
+title: "Medulloblastoma RNAseq canonical CDS clustering, cell lines only"
+output: html_notebook
+---
+
+
+```{r setup, include = FALSE}
+library(stringr)
+library(tidyverse)
+library(DESeq2)
+library(RColorBrewer)
+library(fgsea)
+library(msigdb)
+library(ExperimentHub)
+library(GSEABase)
+library(org.Hs.eg.db)
+library(AnnotationDbi)
+library(egg)
+```
+
+
+# Introduction
+
+In this notebook, I process the RNAseq counts data generated using the regular RNAseq processing pipeline for the Hofman et al. (2023) paper. 
+Briefly, I filter the counts data to only select cell line samples (since MYC status is best established for these samples). 
+I then use the cell line RNAseq counts to perform sample clustering (Figure 1E), as well as gene set enrichment analysis (Figure S1F).
+
+Input files:
+- metadata file for the RNA-seq samples (Table S1A should suffice) containing sample names and MYC group annotations
+- gene-level CDS counts data generated using featureCounts in the regular RNAseq processing pipeline (so not for the translational efficiency calculations) for annotated genes (GRCh38/Ensembl v 102)
+
+Output
+- .csv file containing cleaned up counts table (Supplementary Table S1B)
+- .csv file with gene set enrichment analysis results (Supplementary Table S1H)
+- PCA plot used for Hofman et al. Fig. 1E
+- GSEA results plot for Hofman et al. Fig S1F
+
+```{r}
+colors <- c("#0073C2FF", "#EFC000FF", "#868686FF", "#DC0000FF", "#7AA6DCFF", "#1B1B1BFF", "#FF7F0EFF", "#17BCEFFF", "#009E73", "#CC79A7")
+```
+
+
+
+
+# Process RNAseq counts and write to table
+
+In this section, I load the featurecounts output table, and clean up the table to write to a .csv file for table S1.
+```{r}
+# Load featurecounts table
+canonical_RNA_counts_all <- read.table("/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/rnaseq_regular/data/processed/featurecounts/medullo_allsamples.counts", check.names = F)
+
+# Fix sample column names
+colnames(canonical_RNA_counts_all) <- sapply(basename(colnames(canonical_RNA_counts_all)),
+                                             function(x)
+                                               gsub(".Aligned.sortedByCoord.out.bam", "", x)) 
+
+# Remove unnecessary metadata columns
+canonical_RNA_counts_all <- canonical_RNA_counts_all %>%
+  dplyr::select(6:ncol(.))
+
+# Write to .csv
+write.csv(canonical_RNA_counts_all, "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/rnaseq_regular/results/tables/S1_RNA_fulllength_canonical_counts.csv", quote = F)
+```
+
+
+
+
+# DESeq2 analysis
+
+## Load data
+
+First, I load the Excel file for supplementary table S1A, containing the metadata for all RNAseq and riboseq samples. 
+I then select all 'complete' samples which have both RNAseq and riboseq data. I generate a 'rna_name' column to later match the counts table columns to the metadata rows.
+I select only cell line metadata, since we're going to use the cell line counts data to perform clustering and gene set enrichment analysis.
+```{r}
+# Load and process metadata table
+
+# Load metadata
+sample_metadata <- readxl::read_xlsx("/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/01.26.2023_Table_S1.xlsx", sheet = 1, col_names = T, skip = 2, .name_repair = "universal")
+
+# Filter samples with both RNAseq and riboseq data
+sample_metadata_complete <- sample_metadata[which(
+  !is.na(sample_metadata$RNASeq_file_names) &
+    !is.na(sample_metadata$RiboSeq_file_names..final.)), ]
+
+# Get RNA sample names based on filenames
+sample_metadata_complete <- sample_metadata_complete %>%
+  mutate(rna_name = gsub("_R1.*", "", gsub(";.*", "", .$RNASeq_file_names)))
+
+# Select metadata for cell line samples
+sample_metadata_celllines <- subset(sample_metadata_complete, Sample_Type == "Cell line")
+sample_metadata_celllines$MYC.group <- as.factor(sample_metadata_celllines$MYC.group)
+
+rownames(sample_metadata_celllines) <- sample_metadata_celllines$Sample_ID
+```
+
+Before running DESeq2, I need to match the cell line metadata to the count data. The names don't have exact matches, so I have to use a bit of a convoluted way to match metadata to sample columns in the RNAseq counts table.
+```{r}
+# Match RNA-seq counts columns to metadata rows
+
+# Extract the column names from rna_counts that match the RNASeq_file_names in sample_metadata_celllines
+match_counts <- unique(str_extract(sample_metadata_celllines$RNASeq_file_names, str_c(colnames(canonical_RNA_counts_all), collapse = "|")))
+
+# Subset rna_counts based on the matched columns
+canonical_RNA_counts <- canonical_RNA_counts_all[, match_counts]
+
+# Find matching metadata
+metadata_matches <- grep(paste(match_counts, collapse = "|"), sample_metadata_celllines$RNASeq_file_names)
+sample_metadata_celllines <- sample_metadata_celllines[metadata_matches, ]
+
+colnames(canonical_RNA_counts) <- sample_metadata_celllines$Sample_ID
+```
+
+
+## Run DESeq2
+
+```{r}
+# Run DESeq2
+dds <- DESeqDataSetFromMatrix(countData = canonical_RNA_counts, colData = sample_metadata_celllines, design = ~ MYC.group)
+dds <- DESeq(dds)
+vsd <- vst(dds, blind = F)
+mat_vsd <- assay(vsd)
+mat_dds <- counts(dds, normalized = T)
+
+# Get DESeq2 results
+resultsNames(dds)
+res <- results(dds, contrast = c("MYC.group", "MYC high", "MYC low"))
+```
+
+
+## Sample clustering
+
+MYC high and MYC low cell line clustering is visualized using PCA. The resulting PDF is used for fig 1E. 
+```{r}
+pcaData <- plotPCA(vsd, intgroup=c("MYC.group"), returnData=TRUE)
+
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+
+plt <- ggplot(pcaData, aes(PC1, PC2, color=MYC.group)) +
+  scale_color_brewer(palette = "Set1") +
+  geom_point(size=2) +
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variance")) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+                                                           panel.background = element_blank(), axis.line = element_line(colour = "black"))+   theme(aspect.ratio=1, plot.title = element_text(hjust = 0.5)) +
+  labs(color = "MYC level", title = "RNA-seq")
+
+plt_fixed <- set_panel_size(plt, width  = unit(4, "cm"),
+                               height = unit(4, "cm"))
+
+ggsave(plt_fixed, device = "pdf", filename = "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/rnaseq_regular/results/plots/1E_RNA_CDS_DEA_PCA.pdf",
+       width = unit(5, "cm"),
+       height = unit(5, "cm"))
+```
+
+
+## Gene set enrichment analysis
+
+In this section, I perform GSEA for different gene set categories. The results are saved to a .csv file for Supplementary table 1, and visualized with a bar graph (for supp figure 1).
+```{r}
+# Create genelist for fgsea
+res_df <- data.frame(res) %>%
+  rownames_to_column("gene_id")
+
+genelist <- res_df %>% 
+  dplyr::select(gene_id, log2FoldChange) %>% 
+  na.omit() %>% 
+  distinct() %>% 
+  group_by(gene_id) %>% 
+  summarize(logFC=mean(log2FoldChange))
+genelist
+
+res_df$SYMBOL <- mapIds(
+  x = org.Hs.eg.db,
+  keys = res_df$gene_id,
+  column = "SYMBOL",keytype = "ENSEMBL", multiVals = "first")
+
+# Map gene names to ORFs
+genelist$Entrez <- mapIds(
+  x = org.Hs.eg.db,
+  keys = genelist$gene_id,
+  column = "ENTREZID",keytype = "ENSEMBL", multiVals = "first")
+
+# Remove entries without Entrez name
+gseaDat <- filter(genelist, !is.na(Entrez))
+
+# Rank genes based on logFC
+ranks <- gseaDat$logFC
+names(ranks) <- gseaDat$Entrez
+head(ranks)
+
+barplot(sort(ranks, decreasing = T))
+```
+
+```{r}
+# Load msigdb object if already generated
+msigdb.hs <- readRDS("/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/rnaseq_regular/data/msigdb_hs.rds")
+
+# If not already generated, create new object using ExperimentHub
+# eh = ExperimentHub()
+# query(eh , 'msigdb')
+
+# #use the custom accessor to select a specific version of MSigDB
+# msigdb.hs = getMsigdb(org = 'hs', id = 'EZID', version = '7.5')
+# msigdb.hs
+ 
+# msigdb.hs = appendKEGG(msigdb.hs)
+# msigdb.hs
+```
+
+We can select different gene-set subsets by picking any of the subsets below.
+
+The main collections are as follows:
+* c1: positional gene sets (gene sets corresponding to human chromosome cytogenetic bands)
+* c2: curated gene sets, divided into two sub-collections: chemical and genetic perturbations (CGP) and canonical pathways (CP). The canonical pathways are again sub-divided into biocarta, kegg, PID, reactome and wikipathways.
+* c3: regulatory gene sets (MIR = microRNA targets; TFT = transcription factor targets)
+* c4: computational gene sets (CGN = cancer-gene neighborhoods; CM = cancer modules)
+* c5: ontology gene sets (GO and HPO)
+* c6: oncogenic genesets
+* c7: immunologic gene sets
+* c8: cell type signature gene sets
+* h: hallmark gene sets
+
+```{r}
+# listCollections(msigdb.hs)
+# listSubCollections(msigdb.hs)
+```
+
+
+```{r}
+hallmark_genesets <- msigdb::subsetCollection(msigdb.hs, collection = "h")
+GO_mf <- msigdb::subsetCollection(msigdb.hs, subcollection = "GO:MF")
+GO_cc <- msigdb::subsetCollection(msigdb.hs, subcollection = "GO:CC")
+GO_bp <- msigdb::subsetCollection(msigdb.hs, subcollection = "GO:BP")
+kegg_genesets <- msigdb::subsetCollection(msigdb.hs, subcollection = "CP:KEGG")
+reactome_genesets <- msigdb::subsetCollection(msigdb.hs, subcollection = "CP:REACTOME")
+```
+
+```{r}
+# Run fgsea for hallmark gene sets
+fgseaRes_hallmark <- fgsea(geneIds(hallmark_genesets), ranks, minSize=15, maxSize = 800)
+
+# Tidy results and arrange by NES
+fgseaResTidy_hallmark <- fgseaRes_hallmark %>%
+  as_tibble() %>%
+  arrange(desc(NES))
+
+# Subset padj < 0.05
+fgseaResSubset_hallmark <- subset(fgseaResTidy_hallmark, padj < 0.05)
+```
+
+```{r}
+# Run fgsea for KEGG pathways
+fgseaRes_kegg <- fgsea(geneIds(kegg_genesets), ranks, minSize=15, maxSize = 800)
+
+# Tidy results and arrange by NES
+fgseaResTidy_kegg <- fgseaRes_kegg %>%
+  as_tibble() %>%
+  arrange(desc(NES))
+
+# Subset padj < 0.05
+fgseaResSubset_kegg <- subset(fgseaResTidy_kegg, padj < 0.05)
+```
+
+```{r}
+# Run fgsea for GO:MF pathways
+fgseaRes_GOMF <- fgsea(geneIds(GO_mf), ranks, minSize=100, maxSize = 800)
+
+# Tidy results and arrange by NES
+fgseaResTidy_GOMF <- fgseaRes_GOMF %>%
+  as_tibble() %>%
+  arrange(desc(NES))
+
+# Subset padj < 0.05
+fgseaResSubset_GOMF <- subset(fgseaResTidy_GOMF, padj < 0.05)
+```
+
+```{r}
+# Run fgsea for GO:CC pathways
+fgseaRes_GOCC <- fgsea(geneIds(GO_cc), ranks, minSize=100, maxSize = 800)
+
+# Tidy results and arrange by NES
+fgseaResTidy_GOCC <- fgseaRes_GOCC %>%
+  as_tibble() %>%
+  arrange(desc(abs(NES)))
+
+# Subset padj < 0.05
+fgseaResSubset_GOCC <- subset(fgseaResTidy_GOCC, padj < 0.05)
+```
+
+```{r}
+# Run fgsea for GO:BP pathways
+fgseaRes_GOBP <- fgsea(geneIds(GO_bp), ranks, minSize=80, maxSize = 800, nperm = 15000)
+
+# Tidy results and arrange by NES
+fgseaResTidy_GOBP <- fgseaRes_GOBP %>%
+  as_tibble() %>%
+  arrange(desc(NES))
+
+# Subset padj < 0.05
+fgseaResSubset_GOBP <- subset(fgseaResTidy_GOBP, padj < 0.05)
+fgseaResSubset_GOBP$pathway <- gsub("_", " ", fgseaResSubset_GOBP$pathway)
+```
+
+```{r}
+# Run fgsea for reactome pathways
+fgseaRes_reactome <- fgsea(geneIds(reactome_genesets), ranks, minSize=80, maxSize = 800)
+
+# Tidy results and arrange by padj value
+fgseaResTidy_reactome <- fgseaRes_reactome %>%
+  as_tibble() %>%
+  arrange(desc(NES))
+
+# Subset padj < 0.05
+fgseaResSubset_reactome <- subset(fgseaResTidy_reactome, padj < 0.05)
+```
+
+```{r}
+# Merge all fgsea results
+fgseaRes_all <- rbind(
+ mutate(fgseaRes_GOBP, geneset = "GO:BP"),
+ mutate(fgseaRes_GOCC, geneset = "GO:CC"),
+ mutate(fgseaRes_GOMF, geneset = "GO:MF"), 
+ mutate(fgseaRes_hallmark, geneset = "hallmark"), 
+ mutate(fgseaRes_kegg, geneset = "KEGG"), 
+ mutate(fgseaRes_reactome, geneset = "Reactome"), fill = T)
+
+# Select all results with padj < 0.05
+fgseaRes_all_subset <- fgseaRes_all %>%
+  subset(padj < 0.05 & NES > 0) %>%
+  group_by(geneset) %>%
+  slice_max(order_by = NES, n = 3) %>%
+  mutate(pathway = sub("^.*?_", "", pathway)) %>%
+  mutate(pathway = gsub("_", " ", pathway)) %>%
+  mutate(pathway = factor(pathway, levels = pathway)) %>%
+  mutate(geneset = factor(geneset, levels = unique(geneset))) %>%
+  arrange(pathway, geneset)
+
+fgseaRes_all_df <- data.frame(fgseaRes_all) %>% 
+  rowwise() %>% 
+  mutate_if(is.list, ~paste(unlist(.), collapse = '|')) 
+
+write.csv(fgseaRes_all_df, "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/rnaseq_regular/results/tables/S1_GSEA_results_all.csv", quote = F, row.names = F)
+```
+
+```{r}
+# Plot fgsea results
+ggplot(fgseaRes_all_subset, aes(pathway, NES, fill = geneset)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  scale_fill_manual(values = colors[1:7]) +
+  coord_flip() +
+  # scale_x_discrete(limits = rev(levels(fgseaRes_all_subset$pathway))) +
+  facet_grid(geneset ~ ., scales = "free", space = "free", switch = "both") +
+  labs(x="Pathway", 
+       y="Normalized Enrichment Score",
+       title="GSEA", 
+       subtitle = "RNAseq, top 5 sets per category (padj < 0.05, NES > 0)", 
+       fill = "Category") + 
+  theme_minimal() +
+  theme(
+    axis.text.y = element_text(size = 4), 
+    title = element_text(size = 8), 
+    axis.ticks = element_blank(), 
+    axis.line = element_blank(), 
+    panel.grid.major.y = element_blank(), 
+    panel.grid.minor.x = element_blank(), 
+    panel.grid.major.x = element_line(linewidth = 0.1), 
+    plot.subtitle = element_text(hjust = 0.2, size = 6), 
+    axis.title.x = element_text(size = 6, hjust = 0.5), 
+    axis.text.x = element_text(size = 6), strip.text.y = element_text(size = 5), legend.position = "none", strip.clip = "off")
+
+ggsave(
+  device = "pdf", filename = "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/rnaseq_regular/results/plots/S1F_GSEA_results.pdf", width = unit(5, "cm"), height = unit(4, "cm"))
+
+```
+
+
+

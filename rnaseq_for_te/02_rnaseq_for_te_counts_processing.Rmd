@@ -1,0 +1,30 @@
+---
+title: "RNAseq counts processing (RNAseq for TE pipeline)"
+output: html_notebook
+---
+
+```{r setup, include = FALSE}
+library(DESeq2)
+library(tidyverse)
+library(ggrepel)
+```
+
+# Process counts data
+```{r}
+# Load counts data
+medullo_canonical_RNA_counts_TE <- read.table(
+  "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses/01_processed_data/03_rnaseq_processing_for_TE/data/processed/featureCounts/Medullo_RNA_GRCh38.102.geneCountsCDS_all.txt", 
+  check.names = F, 
+  header = T, 
+  row.names = 1) %>%
+  select(6:ncol(.))  # Remove irrelevant metadata columns
+
+colnames(medullo_canonical_RNA_counts_TE) <- sapply(basename(colnames(medullo_canonical_RNA_counts_TE)),
+                                                 function(x)
+                                                   gsub(".Aligned.sortedByCoord.out.bam", "", x))
+
+colnames(medullo_canonical_RNA_counts_TE) <- sapply(colnames(medullo_canonical_RNA_counts_TE), function(x) paste0(str_split(x, pattern = "_")[[1]][1:2], collapse = "_"))
+
+write.csv(medullo_canonical_RNA_counts_TE, "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/analyses/rnaseq_for_te_analysis/tables/S1_RNA_for_te_canonical_counts.csv", quote = F)
+```
+
