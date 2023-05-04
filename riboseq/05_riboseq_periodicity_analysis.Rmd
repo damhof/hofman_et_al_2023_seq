@@ -1,0 +1,258 @@
+---
+title: "Medullo Riboseq Periodicity Plots"
+output: html_notebook
+date: "January 16, 2023"
+author: "Damon Hofman"
+---
+
+# Description
+This R notebook performs a periodicity analysis on medulloblastoma RiboseQC output data and generates Figures S1D and S1E.
+
+## Input files:
+
+1. 01.26.2023_Table_S1.xlsx: metadata table
+
+## Output files:
+
+1. Medullo_merged_periodicity_new.pdf: periodicity plot for overall stats
+2. framepref_allreads_allsamples.csv: stats on the frame preference for all samples
+
+# Load required libraries
+
+```{r setup, include = FALSE}
+library(RiboseQC)
+library(tidyverse)
+library(gridExtra)
+```
+
+# Load and preprocess metadata
+
+```{r}
+# Load metadata table S1A
+sample_metadata <- readxl::read_xlsx(
+  "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/01.26.2023_Table_S1.xlsx", 
+  sheet = 1, 
+  col_names = T, 
+  skip = 2, 
+  .name_repair = "universal")
+
+# Filter samples with both RNAseq and riboseq data
+sample_metadata_complete <- sample_metadata[which(
+  !is.na(sample_metadata$RNASeq_file_names) &
+    !is.na(sample_metadata$RiboSeq_file_names..final.)), ]
+```
+
+# Gather stats per sample
+
+```{r}
+ribo_files <- list.files("/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/riboseq/data/processed/RiboseQC/", "results_RiboseQC_all", recursive = T, full.names = T)
+names(ribo_files) <- basename(dirname(ribo_files))
+
+ribo_files <- ribo_files[grep("HHT", names(ribo_files), invert = T)]
+
+# Only select riboseqc files that are in the metadata
+matches <- unique(str_extract(sample_metadata_complete$RiboSeq_file_names..final., str_c(names(ribo_files), collapse = "|")))
+ribo_files <- ribo_files[matches]
+```
+
+
+```{r}
+framepref_allreads_allsamples <- data.frame()
+
+for(i in 1:length(ribo_files)){
+  ribo_file <- ribo_files[i]
+  sample <- basename(dirname(ribo_file))
+  
+  print(paste0("Processing sample ", i, " of ", length(ribo_files)))
+  
+  # Load riboseqc data
+  load(ribo_file)
+  data <- res_all
+  profile_type = "profiles_P_sites"
+  res = "P_sites_subcodon"
+  comp = "nucl"
+  signal <- data[[profile_type]][[res]][[comp]]
+  
+  signal <- data$profiles_fivepr$five_prime_subcodon$nucl
+  rl_ok <- names(signal)  # get available read lengths
+  rl_ok <- c(rl_ok[1], as.character(sort(as.integer(rl_ok[-1], decreasing=FALSE))))  # sort read lengths in ascending order and "all" at the beginning
+  
+  data_bar = list()
+  
+  for (rl in rl_ok) {
+    # get read length data and format
+    x <- data.frame(signal[[rl]], check.names = F)
+    x.m <- data.frame(value = colSums(x))
+    x.m$pos <- seq_len(length(x))
+    x.m$frame <- paste0("frame ", rep(c(3,1,2),67)[seq_along(x)])
+    
+    # add read length data to list
+    data_bar[[rl]] <- x.m
+  }
+  
+  
+  # Get read length for max frame preference in sample
+  summary_P_sites_sample <- data.frame(data$summary_P_sites)
+  rl <- subset(summary_P_sites_sample, read_length %in% c("28", "29", "30")) %>%
+  dplyr::slice(which.max(frame_preference)) %>%
+  dplyr::select(read_length)
+  rl <- as.character(rl)
+  
+  # rl <- ifelse("29" %in% rl_ok, "29", "all")
+  # rl <- ifelse(rl %in% rl_ok, "29", "all")
+  
+  
+  # Get periodicity data for max read length
+  x.m <- data_bar[[rl]]
+  
+  res_breaks <- c(1, 26, 51, 84, 117, 150, 176, 200)
+  res_labels <- c("TSS", "", "start\ncodon", "", "", "stop\ncodon", "", "TES")
+  res_x_lab <- "\nposition (nucleotide resolution)"
+  
+  x.m$frame<-as.character(x.m$frame)
+  x.m$frame[x.m$frame=="frame 2"]<-"Frame 0"
+  x.m$frame[x.m$frame=="frame 1"]<-"Frame 2"
+  x.m$frame[x.m$frame=="frame 3"]<-"Frame 1"
+  x.m$frame<-gsub(x.m$frame,pattern = "F",replacement = "f")
+  x.m$frame<-factor(x.m$frame,levels=c("frame 0","frame 1","frame 2"))
+  
+  framepref_allreads <- data_bar[[rl]] %>%
+    group_by(frame) %>%
+    summarize(tot_reads = sum(value)) %>%
+    mutate(perc = tot_reads/sum(tot_reads))
+    
+  framepref_allreads$frame<-as.character(framepref_allreads$frame)
+  framepref_allreads$frame[framepref_allreads$frame=="frame 2"]<-"Frame 0"
+  framepref_allreads$frame[framepref_allreads$frame=="frame 1"]<-"Frame 2"
+  framepref_allreads$frame[framepref_allreads$frame=="frame 3"]<-"Frame 1"
+  framepref_allreads$frame<-gsub(framepref_allreads$frame,pattern = "F",replacement = "f")
+  framepref_allreads$frame<-factor(framepref_allreads$frame,levels=c("frame 0","frame 1","frame 2"))
+  framepref_allreads$sample<-sample
+  framepref_allreads$rl <- rl
+  framepref_allreads_allsamples <- rbind(framepref_allreads_allsamples, framepref_allreads)
+  
+  print(paste0("Processing sample ", sample, " ... Done!"))
+
+}
+
+
+
+```
+
+## Overall stats
+
+```{r}
+ribo_file <- "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/riboseq/data/processed/RiboseQC.merged/Medullo_merged/_results_RiboseQC_all"
+sample <- "Medullo_merged"
+
+# Load riboseqc data
+load(ribo_file)
+data <- res_all
+profile_type = "profiles_P_sites"
+res = "P_sites_subcodon"
+comp = "nucl"
+signal <- data[[profile_type]][[res]][[comp]]
+
+# signal <- data$profiles_fivepr$five_prime_subcodon$nucl
+
+rl_ok <- names(signal)  # get available read lengths
+rl_ok <- c(rl_ok[1], as.character(sort(as.integer(rl_ok[-1], decreasing=FALSE))))  # sort read lengths in ascending order and "all" at the beginning
+
+data_bar = list()
+
+for (rl in rl_ok) {
+  # get read length data and format
+  x <- data.frame(signal[[rl]], check.names = F)
+  x.m <- data.frame(value = colSums(x))
+  x.m$pos <- seq_len(length(x))
+  x.m$frame <- paste0("frame ", rep(c(3,1,2),67)[seq_along(x)])
+  
+  # add read length data to list
+  data_bar[[rl]] <- x.m
+}
+
+# Plot periodicity for read length 29 nt
+
+# Get read length for max frame preference in sample
+  summary_P_sites_sample <- data.frame(data$summary_P_sites)
+  rl <- summary_P_sites_sample %>%
+  dplyr::slice(which.max(frame_preference)) %>%
+  dplyr::select(read_length)
+  rl <- as.character(rl)
+
+# rl <- ifelse("29" %in% rl_ok, "29", "all")
+# rl <- "all"
+x.m <- data_bar[[rl]]
+
+res_breaks <- c(1, 26, 51, 84, 117, 150, 176, 200)
+res_labels <- c("TSS", "", "start\ncodon", "", "", "stop\ncodon", "", "TES")
+res_x_lab <- "\nposition (nucleotide resolution)"
+
+x.m$frame<-as.character(x.m$frame)
+x.m$frame[x.m$frame=="frame 2"]<-"Frame 0"
+x.m$frame[x.m$frame=="frame 1"]<-"Frame 2"
+x.m$frame[x.m$frame=="frame 3"]<-"Frame 1"
+x.m$frame<-gsub(x.m$frame,pattern = "F",replacement = "f")
+x.m$frame<-factor(x.m$frame,levels=c("frame 0","frame 1","frame 2"))
+
+p1 <- ggplot(data=x.m, aes(x=pos, xend=pos, y=0, yend=value)) +
+  geom_segment(aes(colour=frame, group=frame)) +
+  scale_color_manual(values = c("red","forestgreen","blue")) +
+  scale_x_continuous(breaks=res_breaks, labels=res_labels) +
+  #scale_y_continuous(expand=c(0, 0)) +
+  labs(x=res_x_lab, y="Ribosome P-sites") +
+  theme_classic() +
+  theme(legend.text = element_text(size = 12),
+        legend.title = element_blank(),
+        axis.text = element_text(size = 10),
+        axis.title = element_text(size = 12), 
+        legend.position = "none")
+# p1
+# Save plot
+# ggsave(filename = paste0(sample, "_periodicity.pdf"),
+#        plot = g3, 
+#        device = "pdf", 
+#        scale = 1, 
+#        path = "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses/02_results/riboseq_analysis/plots/periodicity/")
+# 
+
+
+framepref_allreads <- data_bar[[rl]] %>%
+  group_by(frame) %>%
+  summarize(tot_reads = sum(value)) %>%
+  mutate(perc = tot_reads/sum(tot_reads))
+
+framepref_allreads$frame<-as.character(framepref_allreads$frame)
+framepref_allreads$frame[framepref_allreads$frame=="frame 2"]<-"Frame 0"
+framepref_allreads$frame[framepref_allreads$frame=="frame 1"]<-"Frame 2"
+framepref_allreads$frame[framepref_allreads$frame=="frame 3"]<-"Frame 1"
+framepref_allreads$frame<-gsub(framepref_allreads$frame,pattern = "F",replacement = "f")
+framepref_allreads$frame<-factor(framepref_allreads$frame,levels=c("frame 0","frame 1","frame 2"))
+
+framepref_allreads_summary <- framepref_allreads_allsamples %>%
+  group_by(frame) %>%
+  summarize(perc_mean = mean(perc))
+
+p2 <- ggplot(data = framepref_allreads_summary, aes(x = frame, y = perc_mean, fill = frame)) +
+  geom_bar(stat = "identity") +
+  ggbeeswarm::geom_quasirandom(data = framepref_allreads_allsamples, aes(x = frame, y = perc, fill = frame), cex = 0.3) +
+  scale_fill_manual(values = c("red","forestgreen","blue")) +
+  scale_x_discrete(labels = c("0", "+1", "+2"))+ 
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1), limits = c(0, 1)) +
+  labs(x = "Reading frame", y = "Ribosome P-sites") +
+  theme_classic() +
+  theme(legend.position = "none")
+
+# p2 <- p2 +
+  # ggbeeswarm::geom_quasirandom(data = framepref_allreads_allsamples, aes(x = frame, y = perc, fill = frame))
+
+
+p3 <- cowplot::plot_grid(p1, p2, align = "h", axis = "bt", rel_widths = c(3, 1))
+
+p3
+
+cowplot::save_plot(filename = paste0("/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/riboseq/results/plots/", sample, "_periodicity_new.pdf"), p3, ncol = 2, base_height = 3, base_width = 4)
+
+```
+
+

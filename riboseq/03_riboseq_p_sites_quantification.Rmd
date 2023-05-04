@@ -1,0 +1,581 @@
+---
+title: "ORF-level P-site quantification"
+author: "Damon Hofman"
+date: "January 23, 2023"
+output: html_notebook
+---
+
+# Introduction
+
+In this notebook, I calculate the number of translated ORFs based on the calculation of P-site per million values (similar to TPM values). I defined translated ORFs as ORFs that have a P-sites per million (PPM) value of > 1 in at least 5 samples. PPM is calculated in the same way as TPM, using raw P site counts as input instead of raw read counts. 
+
+Input files:
+
+* Sample metadata (Table S1A)
+* Riboseq pipeline P site quantification output tables for canonical and non-canonical ORFs
+* BED files containing all possible predicted P sites for canonical and non-canonical ORFs
+* ORF reference table
+
+Output files:
+* cleaned up P site counts matrix
+* table with translated ORFs
+* figures relating to ORF translation (Fig 1I heatmap & Fig 1J bar plot)
+
+
+```{r setup, include = F}
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(rtracklayer)
+  library(RColorBrewer)
+  library(ComplexHeatmap)
+  library(DESeq2)
+  library(circlize)
+  library(ggrepel)
+  library(EnhancedVolcano)
+  library(ggbeeswarm)
+})
+```
+
+```{r}
+colors <- c("#0073C2FF", "#EFC000FF", "#868686FF", "#DC0000FF", "#7AA6DCFF", "#1B1B1BFF", "#FF7F0EFF", "#17BCEFFF", "#009E73", "#CC79A7")
+```
+
+```{r functions, include = FALSE}
+position_stack_and_nudge <- function(x = 0, y = 0, vjust = 1, reverse = FALSE) {
+  ggproto(NULL, PositionStackAndNudge,
+    x = x,
+    y = y,
+    vjust = vjust,
+    reverse = reverse
+  )
+}
+
+#' @rdname ggplot2-ggproto
+#' @format NULL
+#' @usage NULL
+#' @noRd
+PositionStackAndNudge <- ggproto("PositionStackAndNudge", PositionStack,
+  x = 0,
+  y = 0,
+
+  setup_params = function(self, data) {
+    c(
+        list(x = self$x, y = self$y),
+        ggproto_parent(PositionStack, self)$setup_params(data)
+    )
+  },
+
+  compute_layer = function(self, data, params, panel) {
+    # operate on the stacked positions (updated in August 2020)
+    data = ggproto_parent(PositionStack, self)$compute_layer(data, params, panel)
+
+    x_orig <- data$x
+    y_orig <- data$y
+    # transform only the dimensions for which non-zero nudging is requested
+    if (any(params$x != 0)) {
+      if (any(params$y != 0)) {
+        data <- transform_position(data, function(x) x + params$x, function(y) y + params$y)
+      } else {
+        data <- transform_position(data, function(x) x + params$x, NULL)
+      }
+    } else if (any(params$y != 0)) {
+      data <- transform_position(data, function(x) x, function(y) y + params$y)
+    }
+    data$nudge_x <- data$x
+    data$nudge_y <- data$y
+    data$x <- x_orig
+    data$y <- y_orig
+
+    data
+  },
+
+  compute_panel = function(self, data, params, scales) {
+      ggproto_parent(PositionStack, self)$compute_panel(data, params, scales)
+  }
+)
+```
+
+
+# Pre-processing the P site counts table
+
+```{r}
+# Input file locations
+
+# Canonical P-site counts matrix
+MANE_mat_location <- "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/riboseq/data/processed/psite_quantification/Medullo_all_Psites_quant_MANE/Medullo_all_Psites_quant_MANE_new_allsamples_psites.txt"
+# Non-canonical P-site counts matrix
+gencode_mat_location <- "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/riboseq/data/processed/psite_quantification/Medullo_all_Psites_quant_GENCODEp1_plus_ORFEOME/Medullo_all_Psites_quant_GENCODEp1_plus_ORFEOME_new_allsamples_psites.txt"
+
+# Metadata file
+metadata_location <- "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/01.26.2023_Table_S1.xlsx"  # Change to generic table S1 location
+
+# ORF reference table 
+ref_table_location <- "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/annotation_files/all_ORFs_ref_table.csv"  # Table containing gene_id, tx_id, orf_id, gene_name, biotype & 'canonical' columns, used to match genes to transcripts and ORFs
+noncanonical_orf_data_location <- "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/annotation_files/noncanonical_ORFs_data.csv"   # = Table S1L
+```
+
+```{r}
+# Load metadata table S1A
+sample_metadata <- readxl::read_xlsx(metadata_location, 
+  sheet = 1, 
+  col_names = T, 
+  skip = 2, 
+  .name_repair = "universal")
+
+# Filter samples with both RNAseq and riboseq data
+sample_metadata_complete <- sample_metadata[which(
+  !is.na(sample_metadata$RNASeq_file_names) &
+    !is.na(sample_metadata$RiboSeq_file_names..final.)), ]
+```
+
+```{r}
+# Load ORF reference table
+ref_table <- read.csv(ref_table_location)
+noncanonical_orf_data <- read.csv(noncanonical_orf_data_location)
+```
+
+```{r}
+# Load P sites data
+MANE_mat <- read.table(MANE_mat_location, check.names = F)
+gencode_mat <- read.table(gencode_mat_location, check.names = F)
+
+# Combine P MANE and gencode P sites data
+counts_psites <- data.frame(rbind(MANE_mat, gencode_mat), check.names = F)
+# colnames(counts_psites)[which(colnames(counts_psites) == "S15_1824_S1_11_R1")] <- "S15_1824_JP10031_S11"
+
+counts_psites <- counts_psites[, grep("HHT", colnames(counts_psites), invert = T)]  # Remove HHT samples
+
+# Fix rownames
+rownames(counts_psites) <- gsub("\\..{1,2}$","", rownames(counts_psites))  # Remove transcript version for MANE transcripts
+
+# Give canonical ORFs (transcripts) "_CDS" suffix
+# canonical_ind <- which(rownames(counts_psites) %in% subset(ref_table, ref_table$canonical == "Canonical")$tx_id)
+
+canonical_ind <- which(!(rownames(counts_psites) %in% noncanonical_orf_data$orf_id))
+
+rownames(counts_psites)[canonical_ind] <- paste0(rownames(counts_psites)[canonical_ind], "_CDS")
+```
+
+```{r}
+# Match P-site counts columns to metadata rows
+
+# Extract the column names from rna_counts that match the RNASeq_file_names in sample_metadata_celllines
+match_counts <- unique(str_extract(sample_metadata_complete$RiboSeq_file_names..final., str_c(colnames(counts_psites), collapse = "|")))
+
+# Subset rna_counts based on the matched columns
+counts_psites <- counts_psites[, match_counts]
+
+# Find matching metadata
+metadata_matches <- grep(paste(match_counts, collapse = "|"), sample_metadata_complete$RiboSeq_file_names..final.)
+sample_metadata_complete <- sample_metadata_complete[metadata_matches, ]
+
+colnames(counts_psites) <- sample_metadata_complete$Sample_ID
+```
+
+
+```{r}
+write.csv(counts_psites, "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/riboseq/results/tables/S1_riboseq_P_sites_counts.csv", quote = F)
+```
+
+
+# Identification of translated ORFs
+
+```{r load ORF lengths}
+# Load predicted P sites for each ORF or transcript to calculate ORF lengths
+bed_canonical_p_all <- data.table::fread(
+  "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/riboseq/data/processed/psite_quantification/Medullo_all_Psites_quant_MANE/bedfiles/MANE.GRCh38.v1.0.ensembl_genomic.nochr.gtf_psites_p0.sorted.bed",
+  col.names = c("chrom", "start", "end", "ref_id", "frame", "strand")) %>%
+  subset(!grepl("pATG|pST", .$frame)) 
+
+bed_novel_p_all <- data.table::fread(
+  "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/riboseq/data/processed/psite_quantification/Medullo_all_Psites_quant_GENCODEp1_plus_ORFEOME/bedfiles/GENCODEpI_plus_ORFEOME3.bed.orfs_new.gtf_psites_p0.sorted.bed",
+  col.names = c("chrom", "start", "end", "ref_id", "frame", "strand")) %>%
+  subset(!grepl("pATG|pST", .$frame)) 
+
+ORF_lengths <- rbind(bed_canonical_p_all, bed_novel_p_all) %>%
+  # rownames_to_column("ref_id") %>%
+  group_by(ref_id) %>%
+  summarize(
+    n_codons = n()/3, 
+    length = n(), 
+    length_kb = n()/1000)
+
+ORF_lengths$ref_id <- gsub("\\..{1,2}$","", ORF_lengths$ref_id)
+
+canonical_ind <- which(!(ORF_lengths$ref_id %in% noncanonical_orf_data$orf_id))
+ORF_lengths$ref_id[canonical_ind] <- paste0(ORF_lengths$ref_id[canonical_ind], "_CDS")
+ORF_lengths <- ORF_lengths %>%
+  column_to_rownames("ref_id")
+```
+
+
+## Selection of translation cutoff
+
+In the following section, I calculate the P-sites per million (ppm) of each ORF, which is calculated the same way as transcripts per million (TPM) values, but uses P-sites counts instead of transcript counts.
+6567 ORFs have a mean ppm < 1. 
+
+```{r}
+row_indices <- match(rownames(ORF_lengths), rownames(counts_psites))
+# any(is.na(row_indices)) # FALSE; check if any rownames of ORF_lengths failed to map to rownames of counts_psites
+ORF_lengths_match <- ORF_lengths[order(row_indices),]
+
+all(rownames(ORF_lengths_match) == rownames(counts_psites))
+
+lengths_kb <- ORF_lengths_match$length_kb
+
+rpk <- counts_psites / lengths_kb
+pm_scalingfactors <- colSums(rpk)/1000000
+ppm <- t(t(rpk) / pm_scalingfactors)
+ppm_log2 <- log2(ppm + 0.01)
+
+table(rowMeans(ppm) < 1)
+low_orfs <- rownames(ppm)[which(rowMeans(ppm) < 1)]
+```
+
+To select a cutoff, I plot the density of log2-transformed ppm values in each sample, and choose a cutoff between the low peak and the higher peak, which is around log2(ppm) = 0, or a ppm of 1. 
+
+```{r}
+dens = density(ppm_log2)
+plot(dens)
+# threshold = identify(dens)
+```
+
+
+```{r}
+cutoff = 0
+threshold <- which(abs(dens$x-cutoff)==min(abs(dens$x-cutoff)))  # Find dens$x observation closest to
+# threshold=120
+plot(dens)
+abline(v = dens$x[threshold])
+```
+
+
+## Calculating the total number translated ORFs
+
+Next, I make a list of ORFs to keep based on a ppm > 1 in at least 5 samples. 
+Based on these criteria, 5582 ORFs are removed.
+
+```{r select ORFs from low cluster to keep}
+# Make logical table indicating whether ORF is above or below cutoff
+mat_cutoff <- ifelse(ppm > 1, 1, 0)
+
+mat_cutoff_summary <- data.frame(number_samples = rowSums(mat_cutoff)) %>%
+  mutate(canonical = ifelse(rownames(.) %in% noncanonical_orf_data$orf_id, "non-canonical", "canonical"))
+  
+mat_cutoff_extended <- mat_cutoff_summary %>%
+  rownames_to_column("orf_id") %>%
+  # left_join(ref_table, by = "orf_id")  %>%
+  left_join(noncanonical_orf_data, by = "orf_id")
+
+ORFs_keep <- rownames(subset(mat_cutoff_summary, number_samples >= 5))
+
+# write.csv(mat_cutoff_summary, "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses/02_results/notebooks/orf_quantification/ORF_translation_summary.csv")
+
+write.csv(mat_cutoff_extended, "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/riboseq/results/tables/S1_ORF_translation_extended.csv", row.names = F)
+```
+
+
+## Calculating the number of translated canonical CDSs
+
+```{r}
+# Select canonical CDSs from logical cutoff table
+mat_cutoff_canonical <- mat_cutoff[which(rownames(mat_cutoff) %in% rownames(subset(mat_cutoff_summary, canonical == "canonical"))), ]
+
+# Calculate number and percentage of translated CDSs per samples
+# orfs_per_sample_canonical <- data.frame(Sample_ID = colnames(mat_cutoff_canonical),
+#                                         num_orfs = colSums(mat_cutoff_canonical)) %>%
+#   mutate(perc_canonical = num_orfs / nrow(subset(ref_table, canonical == "Canonical"))) %>%
+#   left_join(sample_metadata_complete)
+
+orfs_per_sample_canonical <- data.frame(Sample_ID = colnames(mat_cutoff_canonical),
+                                        num_orfs = colSums(mat_cutoff_canonical)) %>%
+  left_join(sample_metadata_complete)
+
+max(orfs_per_sample_canonical$num_orfs)
+min(orfs_per_sample_canonical$num_orfs)
+mean(orfs_per_sample_canonical$num_orfs)
+```
+
+
+```{r}
+# Plot with number of translated canonical CDSs per sample
+orfs_per_sample_canonical[grep(pattern = "Tissue", x = orfs_per_sample_canonical$Sample_Type), ]$Sample_Type <- "Tissue"
+
+ggplot(data = orfs_per_sample_canonical, aes(y = num_orfs, x = Sample_ID)) +
+  geom_bar(stat = "identity", fill = colors[1]) +
+  geom_hline(yintercept = mean(orfs_per_sample_canonical$num_orfs), linetype = 2) +
+  geom_text(data = data.frame(Type = "Cell line"), aes(label = round(mean(orfs_per_sample_canonical$num_orfs))), x = -1, y = mean(orfs_per_sample_canonical$num_orfs), 
+            inherit.aes = FALSE, color = "grey20", hjust = .6, vjust = .5, size = 8 / .pt) +
+  coord_cartesian(clip = "off", ylim = c(1, NA)) +
+  scale_y_continuous(expand = c(0,0)) +
+  labs(y = "Translated canonical proteins (ppm > 1)", x = "Samples") +
+  facet_grid(~ Sample_Type, scales = "free_x", space = "free_x") +
+  
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 3))
+
+
+ggsave("/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/riboseq/results/plots/1C_num_translated_CDS.pdf", 
+       width = unit(4, "cm"),
+       height = unit(4, "cm"))
+
+```
+
+
+# Normalized P site counts in all samples
+
+Figures 1I and 1J
+
+First, I normalize all the ORF P site counts together using DESeq2. 
+
+```{r}
+# Get coldata
+coldata_select <- sample_metadata_complete[match(colnames(counts_psites), sample_metadata_complete$Sample_ID), ]
+rownames(coldata_select) = coldata_select$Sample_ID
+
+coldata_select[which(coldata_select$Sample_Type == "Tissue_autopsy"), "Sample_Type"] <- "Tissue" 
+
+coldata_select[is.na(coldata_select$MYC.group), "MYC.group"] <- "Unknown"
+coldata_select$MYC.group <- factor(coldata_select$MYC.group)
+
+# Fix metadata
+colnames(coldata_select) <- gsub(" ", "_", colnames(coldata_select))
+colnames(coldata_select) <- gsub("-", "_", colnames(coldata_select))
+```
+
+```{r}
+dds <- DESeq2::DESeqDataSetFromMatrix(countData = counts_psites, colData = coldata_select, design = ~ Sample_Type + MYC.group)
+dds <- DESeq(dds)
+vsd <- DESeq2::vst(dds, blind = F)
+
+mat_dds <- data.frame(counts(dds, normalized = T))
+mat_vsd <- assay(vsd)
+```
+
+Next, I select only the normalized counts for noncanonical ORF P sites.
+```{r}
+dds_NC <- dds[ORFs_keep, ]
+dds_NC <- dds_NC[!grepl("_CDS", rownames(dds_NC)),]
+vsd_NC <- vsd[rownames(dds_NC), ]
+# mat_vsd_NC <- assay(vsd_NC)
+mat_vsd_NC <- assay(vsd)[rownames(dds_NC), ]
+
+```
+
+
+## Heatmap of translated noncanonical ORFs
+
+```{r}
+# Get MYC expression levels
+ind_MYC <- ref_table[grep("ENSG00000136997", ref_table$gene_id),]$orf_id 
+MYC_vsd <- as.numeric(mat_vsd[ind_MYC, ])
+MYC_dds <- as.numeric(mat_dds[ind_MYC, ])
+
+ind_MYCN <- ref_table[grep("ENSG00000134323", ref_table$gene_id),]$orf_id 
+MYCN_vsd <- as.numeric(mat_vsd[ind_MYCN, ])
+MYCN_dds <- as.numeric(mat_dds[ind_MYCN, ])
+
+```
+
+
+```{r}
+# Set heatmap colors
+myCol <- colorRampPalette(rev(brewer.pal(n = 7, name = "RdYlBu")))(100)
+myBreaks <- seq(0, 8, length.out = 100)
+colors <- c("#0073C2FF", "#EFC000FF", "#868686FF", "#DC0000FF", "#7AA6DCFF", "#1B1B1BFF", "#FF7F0EFF", "#17BCEFFF", "#009E73", "#CC79A7")
+```
+
+
+```{r}
+# Column annotation
+
+# Make column annotation df
+col_ann <- data.frame(
+  Sample_Type = dds_NC$Sample_Type, 
+  # MYC_status = dds_NC$MYC_hi_lo,
+  MYC_level = MYC_vsd,
+  # MYCN_level = MYCN_vsd,
+  row.names = colnames(assay(vsd_NC)))
+
+col_ann$Sample_Type <- factor(col_ann$Sample_Type, levels = sort(unique(col_ann$Sample_Type)))
+# col_ann$MYC_status <- factor(col_ann$MYC_status, levels = sort(unique(col_ann$MYC_status)))
+
+# Set annotation colors
+anno_cols <- list(
+  Sample_Type = setNames(c(brewer.pal(3, "Pastel1")[1:length(unique(col_ann$Sample_Type))]), 
+                     c("Cell line", "Tissue")), 
+  # MYC_status = setNames(c(brewer.pal(length(unique(col_ann$MYC_status)), "Set1")[1:2]),
+                                  # unique(col_ann$MYC_status)),
+  MYC_level = colorRamp2(
+    breaks = seq(min(MYC_vsd), max(MYC_vsd), length.out = 100),
+    myCol)
+  # MYCN_level = colorRamp2(
+  #   breaks = seq(min(MYCN_vsd), max(MYCN_vsd), length.out = 100),
+  #   myCol)
+  )
+
+# Make column HeatmapAnnotation
+ha <- HeatmapAnnotation(
+  df = col_ann, 
+  which = "column", 
+  col = anno_cols, 
+  show_annotation_name = F, 
+  simple_anno_size = unit(0.2, "cm"), 
+    annotation_legend_param = list(direction = "vertical", ncol = 2, labels_gp = gpar(fontsize = 6), title_gp = gpar(fontsize = 8, fontface = "bold")))
+```
+
+
+```{r}
+# Row annotations
+
+ref_table_NC <- ref_table[!grepl("_CDS", rownames(ref_table)),]
+
+# Make row annotation df
+df_row = data.frame(
+  orf_id = rownames(mat_vsd_NC)) %>%
+  left_join(ref_table_NC[,c("orf_id", "biotype")]) %>%
+  column_to_rownames("orf_id")
+
+ref_table_NC_summary <- ref_table_NC %>%
+  group_by(biotype) %>%
+  summarize(count = n())
+
+df_row_summary <- df_row %>%
+  group_by(biotype) %>%
+  summarize(count = n()) %>%
+  mutate(biotype_count = paste0(biotype, " (n = ", count, ")"))
+
+df_row_2 <- rownames_to_column(df_row, "orf_id") %>%
+  left_join(df_row_summary) %>%
+  mutate(biotype = paste0(biotype, " (n = ", count, ")")) %>%
+  column_to_rownames("orf_id") %>%
+  select(biotype)
+
+df_row_2$biotype <- factor(
+  df_row_2$biotype,
+  levels = c(df_row_summary[order(df_row_summary$count, decreasing = T), ]$biotype_count))
+
+
+
+# Set row annotation colors
+col_row <- list(
+  biotype = setNames(colors[1:length(unique(df_row_2$biotype))], 
+                     unique(df_row_2$biotype)))
+# Make row HeatmapAnnotation
+row_ha = HeatmapAnnotation(
+  which = "row",
+  df = df_row_2,
+  annotation_name_gp = gpar(fontsize = 6), 
+  show_annotation_name = F,
+  col = col_row, 
+  show_legend = F)
+```
+
+
+```{r}
+# Heatmap params
+hm <- Heatmap(
+  
+  mat_vsd_NC, 
+  
+  name = "DESeq2 norm. transformed counts", 
+  
+  col = colorRamp2(myBreaks, myCol),
+
+  # Parameters for expression color-bar legend
+  heatmap_legend_param = list(
+    color_bar = "continuous",
+    title_position = "topcenter", 
+    legend_width = unit(4, "cm"), 
+    title_gp = gpar(fontsize = 8, fontface = "bold"), 
+    labels_gp = gpar(fontsize = 8), 
+    direction = "horizontal"),
+  
+  # Row parameters
+  cluster_rows = T, 
+  show_row_names = F, 
+  row_names_gp = gpar(fontsize = 6),
+  row_title_gp = gpar(fontsize = 6, fontface = "bold"),
+  row_title_rot = T,
+  show_row_dend = F,
+  cluster_row_slices = F,
+  row_split = df_row_2$biotype, 
+
+  
+  # Column parameters
+  column_split = factor(col_ann$Sample_Type, levels = unique(col_ann$Sample_Type)), 
+  show_column_names = F, 
+  show_column_dend = T, 
+  column_title_gp = gpar(fontsize = 8, fontface = "bold"),
+
+  # Set column order
+  cluster_columns = T, 
+  cluster_column_slices = T,
+
+  # Column and row annotations
+  top_annotation = ha,
+  left_annotation = row_ha,
+  use_raster = T
+  # raster_resize_mat = TRUE
+  )
+
+pdf("/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/riboseq/results/plots/1I_MYClvls_new.pdf", width = 4, height = 4)
+ht <- draw(
+  hm,
+  heatmap_legend_side = "bottom",
+  annotation_legend_side = "right",
+  column_title_gp = gpar(fontsize = 16))
+dev.off()
+```
+
+
+## Average P sites per biotype
+
+```{r}
+counts_summary <- data.frame(mean = rowMeans(counts(dds_NC, normalized = T))) %>%
+  rownames_to_column("orf_id") %>% 
+  left_join(ref_table[,c("orf_id", "biotype")]) %>%
+  column_to_rownames("orf_id") %>%
+  mutate(biotype = ifelse(is.na(.$biotype), "Canonical", .$biotype))
+
+ORF_df <- data.frame(orf_id = ORFs_keep) %>%
+  left_join(ref_table) %>%
+  mutate(biotype = ifelse(is.na(.$biotype), "Canonical", .$biotype))
+
+ORF_df_summary <- ORF_df %>%
+  group_by(biotype) %>%
+  summarize(count = n())
+
+ORF_df_summary[is.na(ORF_df_summary$biotype), "biotype"] <- "Canonical"
+
+counts_summary$biotype <- factor(counts_summary$biotype, levels = c(ORF_df_summary[order(ORF_df_summary$count, decreasing = T), ]$biotype))
+counts_summary$biotype <- droplevels(counts_summary$biotype)
+
+ggplot(data = counts_summary, aes(x = biotype, y = mean, fill = biotype, color = biotype)) + 
+  geom_quasirandom(size = 0.1, color = "grey20") +
+  # coord_flip(ylim = quantile(counts_summary$mean, c(0, 0.95))) +
+
+  scale_y_continuous(trans = "log2") +
+
+  coord_flip() +
+  geom_boxplot(alpha = 0.7, outlier.shape = NA, color = 1) +
+    scale_x_discrete(limits = rev(levels(counts_summary$biotype))) +
+  # coord_cartesian(ylim = quantile(counts_summary$mean, c(0, 0.95))) +
+
+  # viridis::scale_color_viridis(discrete = T, option = "C", begin = 0.1, end = 1) +
+  # viridis::scale_fill_viridis(discrete = T, option = "C", begin = 0.1, end = 1) +
+  scale_fill_manual(values = setNames(colors[1:length(unique(df_row$biotype))], 
+                     unique(df_row$biotype))) +
+
+  # stat_summary(fun = "median", colour = "red", size = 0.5,
+  #              geom = "hline", aes(yintercept = after_stat(y))) +
+  labs(x = "ORF type", y = "Norm. P-site counts") +
+  theme_classic() +
+  theme(legend.position = "none", axis.text.x = element_text(size = 6))
+
+ggsave(
+  filename = "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/riboseq/results/plots/1J_log2.pdf", device = "pdf", path = , width = unit(3, "cm"), height = unit(3, "cm"))
+```
+
+
+

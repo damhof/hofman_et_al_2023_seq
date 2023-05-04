@@ -1,38 +1,43 @@
 #!/bin/bash
 
-# 01_run_rnaseq_for_te_pipeline.sh
-# 
-# A pipeline script for processing RNA-seq data using SLURM workload manager and lmod module system.
-# The script identifies the fastq files for each sample and initiates a SLURM array to execute the pipeline steps for each sample in parallel. 
-# The steps include quality control, trimming, strandedness check, alignment, and quantification.
-# This pipeline is similar to the regular RNA-seq pipeline, but RNA-seq data is processed in the same way as ribo-seq data, in order to make the RNA-seq and ribo-seq data more comparable for the purpose of translational efficiency calculations.
-# While the input for the regular RNA-seq pipeline consisted of the paired reads, only the first reads are used here (similar to ribo-seq). Reads are trimmed to 29 nt, to match the average length of ribo-seq reads. 
-# An additional filtering step is also implemented, where reads are mapped to a list of contaminant sequences, similar to how ribo-seq reads are processed.
-# The outputs of this pipeline are used to calculate translational efficiency, which is the ratio of ribo-seq reads over RNA-seq reads. # See the config_file.sh for module dependencies, version numbers, and reference files used.
-# See the config_file.sh for module dependencies, version numbers, and reference files used.
+# 01_run_riboseq_pipeline.sh
 #
-# List of output files
+# Short script description
+#
+#
+# List of outputs
+#
 #
 # Authors:
 # Damon Hofman (d.a.hofman-3@prinsesmaximacentrum.nl)
 # Jip van Dinter (j.t.vandinter-3@prinsesmaximacentrum.nl)
 #
-# Date: 12-04-2023
+# Date: 24-04-2023
 
+###########################################
+# To-do List
+###########################################
+# TODO: Fix config file to reflect all necessary variables in all sub scripts
+# TODO: Testrun pipeline with subsampled file
+# TODO: update usage code
+###########################################
 set -uo pipefail
 
 function usage() {
     cat <<EOF
 SYNOPSIS
-  01_run_rnaseq_for_te_pipeline.sh [-c <config file>] [-h]
+  01_run_riboseq_pipeline.sh [-c <config file>] [-h]
 DESCRIPTION
-  1. Trim reads to 29 nt and filter them with trimgalore (wrapper for cutadapt and fastqc)
-  2. Run BOWTIE2 on trimmed reads to filter contaminant RNA sequences
-  3. Map reads with STAR
-  4. Quantify gene-level read counts for annotated CDS regions with featureCounts
-  5. Generate Salmon index for ORF-level read quantification
-  6. Run Salmon with custom index to quantify reads mapping to canonical and non-canonical ORFs
-OPTIONS
+  1. Run TRIMGALORE on ribo-seq reads
+  2. Remove contaminants from FASTQ with BOWTIE
+  3. Align reads with STAR
+  4. Run featureCounts to quantify canonical CDS read counts
+  5. Perform QC and extract P sites from ribo-seq reads with RiboseQC
+  6. Quantify P-sites in canonical CDSs
+  7. Quantify P-sites in non-canonical ORFs
+  8. Merge BAMs
+  9. Run RiboseQC on merged BAMs
+  OPTIONS
   -c, --config <file>    Configuration file to use
   -h, --help             Display this help message
 AUTHOR
@@ -90,17 +95,16 @@ run=$(uuidgen | tr '-' ' ' | awk '{print $1}')
 if [[ -z $1 ]]; then usage; exit; fi
 
 # Get correct annotation files
-check_annotation ${reference_gtf} ${custom_gtf}
+check_annotation ${reference_annotation} ${reference_gtf} ${reference_annotation_package}
 
 # Find samples
 echo "$(date '+%Y-%m-%d %H:%M:%S') Finding samples..."
-get_samples $project_data_folder $data_folder $paired_end
+get_samples $project_data_folder $data_folder
 
 # Create output directories
 mkdir -p log
 mkdir -p ${outdir}
 
-##############################################################################
 
 # Step 1: read timming and filtering
 trim_jobid=()
@@ -112,9 +116,9 @@ trim_jobid+=($(sbatch --parsable \
   --job-name=${run}.trimgalore \
   --output=log/${run}.trimgalore.%A_%a \
   --export=ALL,r1_files=${r1_files[@]},sample_ids=${sample_ids[@]} \
-  ${scriptdir}/trimgalore.sh
+  ${scriptdir}/trimgalore.sh \
 ))
-info "Trimgalore jobid: ${trim_jobid[@]}"
+info "trimgalore jobid: ${trim_jobid}"
 
 
 # Step 2: remove contaminant reads with bowtie2
@@ -143,10 +147,10 @@ star_jobid+=($(sbatch --parsable \
   --job-name=${run}.star_align \
   --output=log/${run}.star_align.%A_%a \
   --dependency=aftercorr:${contaminant_jobid} \
+  --export=ALL \
   ${scriptdir}/star_align.sh
 ))
 info "STAR alignment jobid: ${star_jobid[@]}"
-
 
 # Step 4: Run featureCounts to quantify canonical CDS read counts
 featurecounts_jobid=()
@@ -162,37 +166,72 @@ featurecounts_jobid+=($(sbatch --parsable \
 ))
 info "FeatureCounts jobid: ${featurecounts_jobid[@]}"
 
-
-# Step 5: generate Salmon index
-salmon_index_jobid=()
-salmon_index_jobid+=($(sbatch --parsable \
+# Step 5: Perform QC and extract P sites from ribo-seq reads with RiboseQC
+riboseqc_jobid=()
+riboseqc_jobid+=($(sbatch --parsable \
   --mem=48G \
-  --cpus-per-task=8 \
+  --cpus-per-task=2 \
   --time=24:00:00 \
-  --gres=tmpspace:10G \
-  --job-name=${run}.salmon_index \
-  --output=log/${run}/%A_salmon_index.out \
-  --dependency=afterok:${star_jobid} \
-  --export=ALL \
-  ${scriptdir}/salmon_index.sh \
-))
-info "Salmon Index jobid: ${salmon_index_jobid[@]}"
-
-
-# Step 6: Quantify ORF-level RNA-seq reads using Salmon
-salmon_quant_jobid=()
-salmon_quant_jobid+=($(sbatch --parsable \
-  --mem=48G \
-  --cpus-per-task=8 \
-  --time=24:00:00 \
-  --gres=tmpspace:50G \
   --array 1-${#samples[@]}%${simul_array_runs} \
-  --job-name=${run}.salmon_quant_rna \
-  --output=log/${run}/%A_salmon_quant.out \
-  --dependency=afterok:${salmon_index_jobid} \
+  --job-name=${run}.riboseqc \
+  --output=log/${run}.riboseqc.%A_%a \
+  --dependency=aftercorr:${star_jobid} \
   --export=ALL \
-  ${scriptdir}/salmon_quant.sh \
+  ${scriptdir}/riboseqc.sh
 ))
-info "Salmon quant jobid: ${salmon_index_jobid[@]}"
+info "RiboseQC jobid: ${riboseqc_jobid}"
+
+
+# Step 6: Quantify canonical ORF P sites
+canonical_psites_jobid=()
+canonical_psites_jobid+=($(sbatch --parsable \
+ --mem=20G \
+ --cpus-per-task=4 \
+ --time=24:00:00 \
+ --job-name=${run}.canonical_psites \
+ --output=log/${run}.canonical_psites \
+ --dependency=afterok:${riboseqc_jobid} \
+ ${scriptdir}/detect_ORF_overlap_psites_MANE.sh
+))
+
+
+# Step 7: Quantify GENCODE phase I and ORFEOME ORF P sites
+noncanonical_psites_jobid=()
+noncanonical_psites_jobid+=($(sbatch --parsable \
+ --mem=20G \
+ --cpus-per-task=4 \
+ --time=24:00:00 \
+ --job-name=${run}.noncanonical_psites \
+ --output=log/${run}.noncanonical_psites \
+ --dependency=afterok:${riboseqc_jobid} \
+ ${scriptdir}/detect_ORF_overlap_psites_GENCODE_ORFEOME.sh
+))
+
+# Step 8: Merge all BAM files with SAMTOOLS
+pool_jobid=()
+pool_jobid+=($(sbatch --parsable \
+ --mem=48G \
+ --cpus-per-task=6 \
+ --time=24:00:00 \
+ --job-name=${run}.pooling \
+ --output=log/${run}.pooling \
+ --dependency=afterok:${canonical_psites_jobid} \
+ ${scriptdir}/merge_bamfiles.sh
+))
+
+
+#Step 9: Run RiboseQC on merged BAM for overall QC statistics
+riboseqc_merged_jobid=()
+riboseqc_merged_jobid+=($(sbatch --parsable \
+ --mem=48G \
+ --cpus-per-task=6 \
+ --time=24:00:00 \
+ --job-name=${run}.riboseqc.pooled \
+ --output=log/${run}.riboseqc.pooled \
+ --dependency=afterok:${pool_jobid} \
+ ${scriptdir}/merged_riboseqc.sh
+))
+
+
 
 

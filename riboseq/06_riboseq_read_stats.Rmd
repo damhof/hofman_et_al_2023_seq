@@ -1,0 +1,438 @@
+---
+title: "Medullo riboseq stats"
+output: html_notebook
+date: "January 16, 2023"
+author: "Damon Hofman"
+---
+
+```{r setup, include = FALSE}
+# Load required libraries
+library(RiboseQC)
+library(stringr)
+library(ggbeeswarm)
+library(ggsci)
+library(tidyverse)
+library(ggpubr)
+
+# Set color palette
+colors <- pal_jco("default", alpha = 0.7)(9)
+
+# Set plot directory
+plotdir <- "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/riboseq/results/plots/"
+```
+
+# Description
+
+This notebook contains the code used to generate visualizations of Medulloblastoma ribosome profiling (riboseq) data. 
+
+Input files:
+
+* Sample metadata (Table S1A)
+* Contaminant files generated with bowtie2
+* STAR output log files
+* RiboseQC output files
+
+Output files:
+* Figure showing riboseq read mapping stats (Fig S1A and S1B)
+* Figure showing riboseq footprint length distribution (Fig S1C)
+* Figure showing max in-frame reads (Fig 1B)
+* Figure showing Riboseq read distribution (Fig 1D)
+
+```{r}
+# Process metadata table and select cell line data
+
+# Load metadata table S1A
+sample_metadata <- readxl::read_xlsx(
+  "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/01.26.2023_Table_S1.xlsx", 
+  sheet = 1, 
+  col_names = T, 
+  skip = 2, 
+  .name_repair = "universal")
+
+# Filter samples with both RNAseq and riboseq data
+sample_metadata_complete <- sample_metadata[which(
+  !is.na(sample_metadata$RNASeq_file_names) &
+    !is.na(sample_metadata$RiboSeq_file_names..final.)), ]
+
+# Get RNA sample names based on filenames
+sample_metadata_complete <- sample_metadata_complete %>%
+  mutate(rna_name = gsub("_R1.*", "", gsub(";.*", "", .$RNASeq_file_names)))
+```
+
+# Visualization: Contaminant reads
+
+```{r load contaminants data}
+# Process contaminants data
+contaminant_files <- list.files(
+  "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/riboseq/data/processed/bowtie2/", 
+  pattern = "contaminants.txt", 
+  full.names = T, 
+  recursive = T)
+
+contaminant_df <- data.frame()
+
+for (i in seq_along(contaminant_files)){
+  contaminants <- read.delim(contaminant_files[i], skip = 1, header = T)[-1, ]
+  colnames(contaminants)[1] <- "Sample"
+  contaminants$Sample <- basename(dirname(contaminant_files[i]))
+
+  contaminant_df <- rbind(contaminant_df, contaminants)
+}
+
+contaminant_df$READ_TYPE <- factor(contaminant_df$READ_TYPE)
+contaminant_df$READ_TYPE <- relevel(contaminant_df$READ_TYPE, ref = "Passed")
+
+reads_summary <- contaminant_df %>%
+  group_by(Sample) %>%
+  summarize(total_reads = sum(READS))
+```
+
+
+```{r generate contaminants plot}
+p1 <- ggplot(
+  data = contaminant_df, 
+  aes(
+    x = reorder(Sample, -READS), 
+    fill = READ_TYPE, 
+    y = READS)) +
+  geom_bar(position = position_fill(), stat = "identity") +
+  labs(
+    fill = "Read type", 
+    y = "Relative fraction of riboseq reads", 
+    x = NULL) +
+  scale_fill_jco(alpha = 0.7) +
+  theme_classic() +
+  scale_y_continuous(expand = c(0, 0)) +
+  theme(
+    axis.ticks.x = element_blank(), 
+    axis.line.x = element_blank(), 
+    axis.text.x = element_text(angle = 45, hjust = 1), 
+    axis.text = element_text(size = 6), 
+    axis.title = element_text(size = 8))
+
+
+p2 <- ggplot(
+  data = contaminant_df, 
+  aes(
+    x = reorder(Sample, -READS), 
+    fill = READ_TYPE, 
+    y = READS)) +
+  geom_bar(position = position_stack(), stat = "identity") +
+  labs(
+    fill = "Read type", 
+    y = "Number of riboseq reads", 
+    x = NULL) +
+  scale_fill_jco(alpha = 0.7) +
+  theme_classic() +
+  scale_y_continuous(expand = c(0, 0)) +
+  theme(
+    axis.ticks.x = element_blank(), 
+    axis.line.x = element_blank(), 
+    axis.text.x = element_text(angle = 45, hjust = 1), 
+    axis.text = element_text(size = 6), 
+    axis.title = element_text(size = 8))
+
+ggarrange(
+  p1, 
+  p2, 
+  ncol = 2, 
+  common.legend = TRUE, 
+  legend = "bottom")
+
+# ggsave(filename = "riboseq_contaminants_rel.pdf", path = plotdir, plot = p1)
+# ggsave(filename = "riboseq_contaminants_abs.pdf", path = plotdir, plot = p2)
+
+```
+
+# Visualization: STAR aligned read stats (Fig S1A and S1B)
+
+```{r}
+star_files <- list.files("/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/riboseq/data/processed/star_tx/", pattern = ".Log.final.out$", full.names = T, recursive = T)
+
+names(star_files) <- basename(dirname(star_files))
+
+# Only select riboseqc files that are in the metadata
+matches <- unique(str_extract(sample_metadata_complete$RiboSeq_file_names..final., str_c(names(star_files), collapse = "|")))
+star_files <- star_files[matches]
+
+reads_df <- data.frame(matrix(nrow = 0, ncol = 3))
+colnames(reads_df) <- c("Sample", "Input_reads", "Unique_reads")
+
+for(i in 1:length(star_files)){
+  
+  logfile <- read.delim(star_files[i])
+  # logname <- basename(star_files[i])
+  # logname <- str_split(logname, "[.]")[[1]][1]
+  logname <- basename(dirname(star_files[i]))
+  sample_id <- as.character(sample_metadata_complete[grep(logname, sample_metadata_complete$RiboSeq_file_names..final.), "Sample_ID"])
+
+  logfile[,1] <- gsub(pattern = "[|]", replacement = "", x = logfile[, 1])
+  logfile[,1] <- trimws(logfile[,1], which = c("both", "left", "right"), whitespace = "[ \t\r\n]")
+  
+  inputreads <- as.numeric(logfile[4, 2])
+  uniqreads <- as.numeric(logfile[7, 2])
+  multireads <- sum(as.numeric(logfile[22, 2], as.numeric(logfile[24, 2])))
+  unmapped_reads <- sum(as.numeric(logfile[grep(pattern = "Number of reads unmapped", logfile[,1]), 2]))
+  
+  readsdf <- data.frame("Sample" = sample_id, "Input_reads" = inputreads, "Unique_reads" = uniqreads, "Multi_mapped_reads" = multireads, "Unmapped_reads" = unmapped_reads)
+  reads_df <- rbind(reads_df, readsdf)
+}
+```
+
+```{r}
+# reads_df <- column_to_rownames(reads_df, "Sample") 
+
+reads_df_2 <- reads_df %>%
+  mutate(Sample_ID = Sample) %>%
+  mutate(mapped_reads = Unique_reads + Multi_mapped_reads) %>%
+  left_join(sample_metadata_complete[, c("Sample_ID", "Sample_Type")]) %>%
+  column_to_rownames("Sample_ID") %>%
+  dplyr::select(-c("Sample", "Unmapped_reads"))
+
+reads_df_2[grep(pattern = "Tissue", x = reads_df_2$Sample_Type), ]$Sample_Type <- "Tissue"
+colSums(reads_df_2[2:ncol(reads_df_2)-1])
+colMeans(reads_df_2[2:ncol(reads_df_2)-1])
+
+
+
+```
+
+
+```{r}
+reads_df_long <- reads_df_2 %>%
+  rownames_to_column("Sample_ID") %>%
+  pivot_longer(cols = c(2:4)) %>%
+  subset(name != "Input_reads") %>%
+  group_by(Sample_ID) %>%
+  mutate(perc = value / sum(value))
+
+reads_df_long$name <- factor(reads_df_long$name, levels = c("Unmapped_reads", "Multi_mapped_reads", "Unique_reads"))
+# reads_df_long$Source <- 
+#   ifelse(grepl("PMCR", x = reads_df_long$Sample), 
+#          "PMC", 
+#          "St_Jude")
+
+ind_cells <- which(reads_df_long$Sample_Type == "Cell line")
+reads_df_long[ind_cells,]$Sample_ID <- gsub("_.*$", "", reads_df_long[ind_cells,]$Sample_ID)
+
+
+```
+
+
+```{r}
+p1 <- ggplot(data = reads_df_long, 
+       aes(y = value,
+           x = Sample_ID,
+           fill = name)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = colors[c(3, 2, 1)]) +
+  scale_y_continuous(expand = c(0, 0)) +
+  labs(y = "Filtered reads", x = "Samples", fill = NULL) +
+  facet_grid(~ Sample_Type, scales = "free_x") +
+  theme_classic() +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 7), 
+    axis.title.x = element_blank())
+p1
+```
+
+```{r}
+p2 <- ggplot(data = reads_df_long, 
+       aes(y = perc,
+           x = Sample_ID,
+           fill = name)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = colors[c(3, 2, 1)]) +
+  scale_y_continuous(labels = scales::percent_format(scale = 100), limits = c(0, 1), expand = c(0, 0)) +
+  labs(y = "Filtered reads", x = "Samples", fill = NULL) +
+  facet_grid(~ Sample_Type, scales = "free_x") +
+
+  theme_classic() +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 7), 
+    axis.title.x = element_blank())
+p2
+
+```
+
+```{r}
+ggarrange(
+  p1, 
+  p2, 
+  ncol = 2, 
+  common.legend = TRUE, 
+  legend = "bottom")
+
+ggsave("/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/riboseq/results/plots/S1A_riboseq_mapping_stats.pdf",
+       width = unit(7, "cm"),
+       height = unit(4, "cm"))
+```
+
+# Visualization: Frame preference per sample (Fig S1C)
+```{r}
+# Find riboseqc results files
+riboseqc_files <- grep("HHT", list.files("/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/riboseq/data/processed/RiboseQC/", 
+                             pattern = "results_RiboseQC_all", full.names = T, recursive = T), invert = T, value = T)
+
+names(riboseqc_files) <- basename(dirname(riboseqc_files))
+
+# Only select riboseqc files that are in the metadata
+matches <- unique(str_extract(sample_metadata_complete$RiboSeq_file_names..final., str_c(names(riboseqc_files), collapse = "|")))
+riboseqc_files <- riboseqc_files[matches]
+
+# Create data.frame with all frame preferences
+summary_P_sites_df <- data.frame()
+summary_reads_df <- data.frame()
+inframe_df <- data.frame()
+read_cats_df <- data.frame()
+cds_reads_df <- data.frame()
+for (fname in riboseqc_files) {
+  sample_id <- as.character(sample_metadata_complete[grep(basename(dirname(fname)), sample_metadata_complete$RiboSeq_file_names..final.), "Sample_ID"])
+  message("Loading ", sample_id)
+  load(fname)
+  
+  summary_P_sites_sample <- data.frame(res_all$summary_P_sites)
+  summary_P_sites_sample$sample_id <- sample_id
+  
+  summary_reads_sample <- data.frame(t(colSums(data.frame(res_all$read_stats$reads_summary_unq$nucl))), row.names = sample_id)
+  
+  inframe_sample <- data.frame(
+    "28nt" = t(res_all$selection_cutoffs$analysis_frame_cutoff$nucl$'28'$frames_res)[2],
+    "29nt" = t(res_all$selection_cutoffs$analysis_frame_cutoff$nucl$'29'$frames_res)[2],
+    "30nt" = t(res_all$selection_cutoffs$analysis_frame_cutoff$nucl$'30'$frames_res)[2],
+    row.names = sample_id, check.names = F)
+  read_cats_sample <- data.frame(t(rowSums(data.frame(res_all$read_stats$reads_summary$nucl))), row.names = sample_id)
+
+  cds_reads_sample <- data.frame(reads = t(sum(res_all$read_stats$counts_cds_genes_unq$reads)), row.names = sample_id)
+
+  summary_P_sites_df <- rbind(summary_P_sites_df, summary_P_sites_sample)
+  summary_reads_df <- dplyr::bind_rows(summary_reads_df, summary_reads_sample) 
+  inframe_df <- rbind(inframe_df, inframe_sample)
+  read_cats_df <- rbind(read_cats_df, read_cats_sample)
+  cds_reads_df <- rbind(cds_reads_df, cds_reads_sample)
+  }
+  
+```
+
+```{r}
+summary_reads_df_sel <- summary_reads_df[,9:18]
+perc_reads_df <- round((summary_reads_df_sel/rowSums(summary_reads_df_sel))*100,2)
+colnames(perc_reads_df) <- gsub(colnames(perc_reads_df), pattern = ".*_", replacement = "")
+```
+
+```{r}
+colMeans(perc_reads_df)
+```
+```{r, fig.width = 3}
+frame_perc_plot <- pivot_longer(perc_reads_df, cols = colnames(perc_reads_df)) %>%
+  ggplot(aes(y = value, x = name)) +
+  # geom_jitter(width = 0.2) +
+  # geom_boxplot(alpha = 0.7) +
+
+  geom_quasirandom(method = "smiley", size = 0.5, cex = 0.8, alpha = 1,width = 0.3) +
+  # geom_violin() +
+  
+  stat_summary(aes(group = 1, yend = ..y.., xend = ..x.. - 0.3), color = "black", fun = mean, geom = "segment") +
+  stat_summary(aes(group = 1, yend = ..y.., xend = ..x.. + 0.3), color = "black", fun = mean, geom = "segment") +
+  scale_y_continuous(labels = scales::percent_format(scale = 1), limits = c(0, 60)) +
+  labs(y = "Reads", x = "Ribosome footprint length (nt)") +
+  theme_classic() 
+  
+frame_perc_plot
+
+ggsave("/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/riboseq/results/plots/S1C_footprint_lenghts_distribution.pdf", width = unit(3, "cm"), height = unit(3, "cm"))
+
+```
+
+# Visualization: In-frame reads (Fig 1B)
+```{r}
+readlen_max_df <- summary_P_sites_df %>%
+  group_by(sample_id) %>%
+  dplyr::slice(which.max(frame_preference)) %>%
+  dplyr::mutate(Sample_ID = sample_id) %>%
+  dplyr::left_join(sample_metadata_complete[,c("Sample_ID", "Sample_Type")])
+
+readlen_max_df[grep(pattern = "Tissue", x = readlen_max_df$Sample_Type), ]$Sample_Type <- "Tissue"
+
+
+inframe_reads_max <- ggplot(data = readlen_max_df, aes(y = frame_preference, x = Sample_ID)) +
+  geom_bar(stat = "identity", fill = colors[1]) +
+  scale_y_continuous(labels = scales::percent_format(scale = 1), limits = c(0, 100), expand = c(0, 0)) +
+  geom_hline(yintercept = mean(readlen_max_df$frame_preference), linetype = 2) +
+  labs(y = "In-frame reads (max frame-pref)", x = "Samples") +
+  facet_grid(~ Sample_Type, scales = "free", space = "free") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 3))
+
+inframe_reads_max
+
+ggsave("/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/riboseq/results/plots/1B_inframe_reads_max.pdf", plot = inframe_reads_max, width = unit(5, "cm"), height = unit(4, "cm"))
+
+mean(readlen_max_df$frame_preference)
+min(readlen_max_df$frame_preference)
+max(readlen_max_df$frame_preference)
+```
+
+
+# Visualization: Riboseq read distribution (Fig 1D)
+```{r}
+read_cats_temp <- read_cats_df
+read_cats_temp$sample_id <- rownames(read_cats_temp)
+read_cats_long <- pivot_longer(read_cats_temp, cols = colnames(read_cats_df))
+
+read_cats_long$name <- factor(read_cats_long$name, levels = c("fiveutrs", "cds", "threeutrs", "ncRNAs", "ncIsof", "introns", "intergenic"))
+
+read_cats_annotgenes <- subset(read_cats_long, name %in% c("fiveutrs", "cds", "threeutrs"))
+read_cats_annotgenes_perc <- read_cats_annotgenes %>%
+  group_by(sample_id) %>%
+  mutate(perc = round(value / sum(value)*100, 2))
+```
+
+
+```{r, fig.width = 2, fig.height = 2}
+readcats_plot <- ggplot(data = read_cats_annotgenes_perc,
+       aes(y = perc, x = sample_id, fill = name)) +
+  
+  geom_bar(stat = "identity",
+           position = "dodge2") +
+  
+  scale_fill_manual(values = colors) +
+  
+  scale_y_continuous(labels = scales::percent_format(scale = 1),
+                     limits = c(0, 100)) +
+  
+  labs(y = "Riboseq reads") +
+  
+  theme_classic() +
+  
+  theme(
+    axis.ticks.x = element_blank(),
+    axis.line.x = element_blank(),
+    legend.position = "none",
+    axis.text.x = element_text(
+      angle = 45,
+      hjust = 1,
+      size = 2)) +
+  
+  facet_grid( 
+    ~ name,
+    scales = "free_x",  # Let the x axis vary across facets.
+    space = "free_x",  # Let the width of facets vary and force all bars to have the same width.
+    switch = "x") +
+  
+  theme(
+    strip.placement = "outside",
+    strip.background = element_blank(),
+    axis.title.x = element_blank()
+  )
+
+ggsave("/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/riboseq/results/plots/1D_read_cats.pdf",
+       plot = readcats_plot,
+       width = unit(3, "cm"),
+       height = unit(3, 'cm'))
+
+```
+
+
+
+

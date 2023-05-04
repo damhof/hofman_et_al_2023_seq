@@ -1,0 +1,229 @@
+---
+title: "Identifying ORFs differentially translated between MYC high and MYC low samples (cell lines only)"
+output: html_notebook
+---
+
+# Description
+This R Notebook is used to analyze differentially translated open reading frames (ORFs) in MYC high and MYC low cell lines. The analysis includes loading metadata, filtering samples, running DESeq2, creating volcano plots, and generating PCA plots.
+
+## Input files:
+1. Metadata file: 01.26.2023_Table_S1.xlsx
+2. ORF reference table: all_ORFs_ref_table.csv
+3. Riboseq P-sites counts: S1_riboseq_P_sites_counts.csv (generated with 03_riboseq_p_sites_quantification.Rmd)
+
+## Output files:
+1. ORF level differential translation analysis results: ORF_level_diff_transl_analysis_results.csv
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(RColorBrewer)
+  library(DESeq2)
+  library(ggrepel)
+  library(EnhancedVolcano)
+})
+```
+
+# Set file locations
+
+```{r file-locations}
+# Metadata file
+metadata_location <- "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/01.26.2023_Table_S1.xlsx"
+
+# ORF reference table
+ref_table_location <- "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/annotation_files/all_ORFs_ref_table.csv"
+```
+
+# Load and filter metadata
+
+```{r load-metadata}
+# Load metadata table S1A
+sample_metadata <- readxl::read_xlsx(metadata_location, 
+  sheet = 1, 
+  col_names = T, 
+  skip = 2, 
+  .name_repair = "universal")
+
+# Filter samples with both RNAseq and riboseq data
+sample_metadata_complete <- sample_metadata[which(
+  !is.na(sample_metadata$RNASeq_file_names) &
+    !is.na(sample_metadata$RiboSeq_file_names..final.)), ]
+
+sample_metadata_filtered <- subset(sample_metadata_complete, Sample_Type == "Cell line")
+```
+
+# Load data and match P-site counts columns
+
+```{r load-data}
+counts_psites <- read.csv("/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/riboseq/results/tables/S1_riboseq_P_sites_counts.csv", row.names = 1, check.names = F)
+ref_table <- read.csv(ref_table_location)
+```
+
+```{r match-columns}
+# Extract the column names from rna_counts that match the RNASeq_file_names in sample_metadata_celllines
+match_counts <- unique(str_extract(sample_metadata_filtered$Sample_ID, str_c(colnames(counts_psites), collapse = "|")))
+
+# Reorder the columns of P-site counts data frame to match the order of metadata
+counts_psites_ordered <- counts_psites[, match_counts]
+
+# Find matching metadata
+metadata_matches <- grep(paste(match_counts, collapse = "|"), sample_metadata_filtered$Sample_ID)
+sample_metadata_matched <- sample_metadata_filtered[metadata_matches, ]
+
+colnames(counts_psites) <- sample_metadata_filtered$Sample_ID
+
+# Fix metadata
+coldata_select <- sample_metadata_filtered
+colnames(coldata_select) <- gsub(" ", "_", colnames(coldata_select))
+colnames(coldata_select) <- gsub("-", "_", colnames(coldata_select))
+```
+
+
+# Differential translation analysis (Table S1K)
+
+```{r, eval = FALSE}
+# Run DESeq2 to analyze differential translation
+dds <- DESeqDataSetFromMatrix(countData = counts_psites_ordered,
+                              colData = sample_metadata_matched,
+                              design = ~ MYC.group)
+
+# Run DESeq2
+dds <- DESeq(dds)
+
+# Transform DESeq2 output
+vsd <- DESeq2::vst(dds, blind = F)
+
+# Store dds counts and vsd counts in matrices
+mat_dds <- data.frame(counts(dds, normalized = T))
+mat_vsd <- assay(vsd)
+
+# Get DESeq2 results
+res <- results(dds, contrast = c("MYC.group", "MYC high", "MYC low"), alpha = 0.01)
+
+# Make readable data frame
+res_df <- data.frame(res) %>%
+  rownames_to_column("orf_id") %>%
+  left_join(ref_table) %>%
+  mutate(orf_name = paste0(.$gene_name, "_", .$biotype))
+
+res_df[which(is.na(res_df$gene_name)), "orf_name"] <- res_df[which(is.na(res_df$gene_name)), "orf_id"]
+
+# Save ORF level differential translation analysis results
+write.csv(res_df, "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses/02_results/notebooks/orf_quantification/ORF_level_diff_transl_analysis_results.csv")
+```
+
+# Visualization: Volcano Plot (Fig 1K)
+
+```{r volcano-plot, eval = FALSE}
+# Create a volcano plot for the differential translation analysis results of non-canonical ORFs
+
+# Select non-canonical ORF results
+res_NC_df <- subset(res_df, canonical == "Non-canonical")
+res_2 <- res_NC_df
+
+# Select top 5 downregulated ORFs (log2FC < -2, based on padj)
+top5down <- res_NC_df %>%
+  subset(log2FoldChange < 2) %>%
+  arrange(.$padj) %>%
+  head(5)
+
+# Select top 5 upregulated ORFs (log2FC < 2, based on padj)
+top5up <- res_NC_df %>%
+  subset(log2FoldChange > 2) %>%
+  arrange(.$padj) %>%
+  head(5) 
+
+# Combine top 5 up and down ORFs
+top <- rbind(top5down, top5up)
+
+# Remove trailing '_biotype' part from ORF names to label
+top$orf_name <- gsub("_.*$", "", top$orf_name)
+
+# Remove the top 10 differentially regulated ORFs from results dataset
+res_2 <- res_2[-which(res_2$orf_id %in% top$orf_id), ]
+
+# Set ORF name of the rest of the ORFs to NA (so they won't be labeled)
+res_2$orf_name <- NA
+
+# Add results of the top 10 ORFs, including their ORF names (so only these will be labeled)
+res_2 <- rbind(res_2, top)
+
+# Make custom keyvals table
+keyvals <- data.frame(res_2) %>%
+  select(c("orf_id", "biotype", "padj"))
+
+cols_biotype <- brewer.pal(6, "Set1")
+
+# Set color of points by ORF biotype
+keyvals[which(keyvals$padj < 0.01 & keyvals$biotype == "lncRNA"), "color"] <- cols_biotype[1]
+keyvals[which(keyvals$padj < 0.01 & keyvals$biotype == "uORF"), "color"] <- cols_biotype[2]
+keyvals[which(keyvals$padj < 0.01 & keyvals$biotype == "uoORF"), "color"] <- cols_biotype[3]
+keyvals[which(keyvals$padj < 0.01 & keyvals$biotype == "dORF"), "color"] <- cols_biotype[4]
+keyvals[which(keyvals$padj < 0.01 & keyvals$biotype == "intORF"), "color"] <- cols_biotype[5]
+keyvals[which(keyvals$padj < 0.01 & keyvals$biotype == "doORF"), "color"] <- cols_biotype[6]
+keyvals$name <- keyvals$biotype
+keyvals[which(is.na(keyvals$color)), "name"] <- NA
+keyvals[which(is.na(keyvals$color)), "color"] <- "grey"
+
+# Make named list from keyvals table (needed for volcanoplot)
+keyvals_list <- keyvals$color
+names(keyvals_list) <- keyvals$name
+
+# Plot the volcanoplot
+plt <- EnhancedVolcano(
+  res_2,
+  lab = res_2$orf_name, legendLabels = c("NS", "NS", "NS", "p < 0.01 & log2FC > 2 | < -2"),
+  colCustom = keyvals_list,
+
+  x = "log2FoldChange", 
+  y = "padj", 
+  title = NULL,
+  subtitle = NULL, colAlpha = 1, col = c("grey", "grey", "grey", "red"), pCutoff = 0.01, FCcutoff = 0, xlim = c(-12, 12), labSize = 3, labFace = "bold", max.overlaps = 10, drawConnectors = T, pointSize = 1, lengthConnectors = unit(0, "mm"), axisLabSize = 15, legendLabSize = 10)
+plt
+
+# ggsave(plot = plt, 
+# filename = "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses/02_results/figures/1G_v2.pdf", device = "pdf", path = , width = unit(6, "cm"), height = unit(6, "cm"))
+
+```
+
+# Visualization: PCA Plot
+
+```{r pca-plot, eval = FALSE}
+# Create a PCA plot for the P-site counts data
+pcaData <- plotPCA(vsd, intgroup = c("MYC.group"), returnData = T) 
+  
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+
+ggplot(pcaData, aes(PC1, PC2, color=MYC.group)) +
+  scale_color_brewer(palette = "Set1") +
+  geom_point(size=3) +
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variance")) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+                                                           panel.background = element_blank(), axis.line = element_line(colour = "black"))+ theme(aspect.ratio=1) +
+  labs(color = "MYC level", title = "P-site counts (cell lines)")
+```
+
+# Visualization: ASNSD1-uORF normalized counts plot (Fig 4A)
+
+```{r ASDURF-counts}
+# Create a dotplot of normalized ASNSD1-uORF P site counts in MYC high and MYC low samples
+
+ASDURF_counts <- plotCounts(dds = dds, gene = "ENST00000607829_CDS", intgroup = "MYC.group", returnData = T, normalized = T)
+
+ASDURF_plt <- ggplot(data = ASDURF_counts, aes(y = count, x = MYC.group, color = MYC.group)) +
+  scale_color_brewer(palette = "Set1") +
+  labs(title = "ASDURF P-site counts", x = NULL, y = "P-site counts") +
+  geom_beeswarm() +
+  theme_classic() +
+  ggpubr::stat_compare_means(comparisons = list(c("MYC high", "MYC low")), label = "p.format", ref.group = "MYC low", label.y = max(ASDURF_counts$count)* 1.1)
+ASDURF_plt
+
+# Save the plot
+ggsave(plot = ASDURF_plt,
+       filename = "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses/02_results/figures/S4A_ASDURF_Riboseq.pdf", device = "pdf", path = , width = unit(6, "cm"), height = unit(6, "cm"))
+
+```
+
+# End of the R Notebook

@@ -27,7 +27,7 @@ set -uo pipefail
 function usage() {
     cat <<EOF
 SYNOPSIS
-  ribo_pipeline.sh [-c <config file>] [-h]
+  run_rnaseq_regular_pipeline.sh [-c <config file>] [-h]
 DESCRIPTION
   Run the RNAseq processing pipeline consisting of the following steps:
   1. Trim reads with trimgalore (wrapper for cutadapt and fastqc)

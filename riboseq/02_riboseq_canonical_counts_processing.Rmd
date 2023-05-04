@@ -1,0 +1,34 @@
+---
+title: "Medullo riboseq canonical counts processing"
+output: html_notebook
+---
+
+I used this script to process and clean up the featurecounts output table in order to generate table S1X containing ribo-seq read counts for canonical CDSs (gene level).
+
+Input:
+- output of featurecounts (run on aligned riboseq read files, using Ensembl v102 (GRCh38) annotation; counts for CDS regions only, summarized on gene level)
+
+Output:
+- cleaned .csv file for table S1E with ribo-seq read counts of annotated CDSs on gene level, used for translational efficiency calculations
+
+```{r}
+library(tidyverse)
+```
+
+
+```{r}
+# Load riboseq counts data
+ribo_counts <- read.table(
+  "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/riboseq/data/processed/featureCounts/CDS_counts.txt", 
+  check.names = F, 
+  header = T, 
+  row.names = 1) %>%
+  select(6:ncol(.))  %>%  # Remove irrelevant metadata columns
+  dplyr::select(grep("HHT", colnames(.), value = T, invert = T))  # Remove hht samples
+
+colnames(ribo_counts) <- sapply(basename(colnames(ribo_counts)),
+                                                 function(x)
+                                                   gsub(".Aligned.sortedByCoord.out.bam", "", x))
+
+write.csv(ribo_counts, "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/riboseq/results/tables/S1_riboseq_canonical_counts.csv")
+```
