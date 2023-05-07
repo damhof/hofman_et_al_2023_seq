@@ -163,7 +163,7 @@ featurecounts_jobid+=($(sbatch --parsable \
 info "FeatureCounts jobid: ${featurecounts_jobid[@]}"
 
 
-# Step 5: generate Salmon index
+# Step 5: generate Salmon index for canonical and non-canonical ORFs
 salmon_index_jobid=()
 salmon_index_jobid+=($(sbatch --parsable \
   --mem=48G \

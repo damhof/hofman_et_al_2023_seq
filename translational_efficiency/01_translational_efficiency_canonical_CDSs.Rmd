@@ -1,0 +1,310 @@
+---
+title: "Gene-level TPM-based TE calculation, cell lines"
+output: html_notebook
+date: "March 1, 2023"
+author: "Damon Hofman"
+---
+
+# Introduction
+In this notebook, I calculate TE values for canonical CDS quantifications (obtained using featureCounts from RNAseq for TE and riboseq data) in cell line data.
+
+Input files:
+- Sample metadata (table S1A)
+- canonical CDS RNAseq counts for TE (table S1C)
+- canonical CDS riboseq counts - (table S1E)
+
+Output files
+- .csv file containing table with TE values for cell line samples (Table S1G)
+- PDF file with plot of TE value distributions for MYC high and MYC low samples (Fig 1D)
+- PDF file with PCA plot for samples, based on TE values (Fig 1G)
+
+```{r setup, include = FALSE}
+library(rtracklayer)
+library(tximport)
+library(stringr)
+library(apeglm)
+library(tidyverse)
+library(DESeq2)
+library(BiocParallel)
+library(ggrepel)
+library(RColorBrewer)
+library(EnhancedVolcano)
+library(ComplexHeatmap)
+library(fgsea)
+library(msigdb)
+library(ExperimentHub)
+library(GSEABase)
+library(org.Hs.eg.db)
+library(clusterProfiler)
+library(AnnotationDbi)
+library(ggstance)
+```
+
+```{r}
+colors <- c("#0073C2FF", "#EFC000FF", "#868686FF", "#DC0000FF", "#7AA6DCFF", "#1B1B1BFF", "#FF7F0EFF", "#17BCEFFF", "#009E73", "#CC79A7")
+```
+
+# Load data
+
+```{r}
+# Process metadata table and select cell line data
+
+# Load metadata table S1A
+sample_metadata <- readxl::read_xlsx(
+  "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/01.26.2023_Table_S1.xlsx", 
+  sheet = 1, 
+  col_names = T, 
+  skip = 2, 
+  .name_repair = "universal")
+
+# Filter samples with both RNAseq and riboseq data
+sample_metadata_complete <- sample_metadata[which(
+  !is.na(sample_metadata$RNASeq_file_names) &
+    !is.na(sample_metadata$RiboSeq_file_names..final.)), ]
+
+# Get RNA sample names based on filenames
+sample_metadata_complete <- sample_metadata_complete %>%
+  mutate(rna_name = gsub("_R1.*", "", gsub(";.*", "", .$RNASeq_file_names)))
+
+# Select metadata for cell line samples
+sample_metadata_celllines <- subset(sample_metadata_complete, Sample_Type == "Cell line")
+
+sample_metadata_celllines$MYC.group <- as.factor(sample_metadata_celllines$MYC.group)
+```
+## Load and filter rnaseq counts
+
+```{r}
+# Load RNAseq counts data
+rna_counts <- read.csv("/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/rnaseq_for_te/results/S1_RNA_for_te_canonical_counts.csv", check.names = F, row.names = 1)
+
+# Extract the column names from rna_counts that match the RNASeq_file_names in sample_metadata_celllines
+match_counts <- unique(str_extract(sample_metadata_celllines$RNASeq_file_names, str_c(colnames(rna_counts), collapse = "|")))
+
+# Subset rna_counts based on the matched columns
+rna_counts_cell_lines <- rna_counts[, match_counts]
+
+# Find matching metadata
+metadata_matches <- grep(paste(match_counts, collapse = "|"), sample_metadata_celllines$RNASeq_file_names)
+sample_metadata_celllines <- sample_metadata_celllines[metadata_matches, ]
+
+colnames(rna_counts_cell_lines) <- sample_metadata_celllines$Sample_ID
+```
+
+
+## Load and filter riboseq counts
+
+```{r}
+# Load riboseq counts data (generated with /riboseq/02_riboseq_canonical_counts_processing.Rmd)
+ribo_counts <- read.csv("/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/riboseq/results/tables/S1_riboseq_canonical_counts.csv", check.names = F, row.names = 1)
+
+# Match ribo_counts columns to metadata rows
+
+# Extract metadata and count names
+metadata_names <- sample_metadata_celllines$RiboSeq_file_names..final.
+counts_names <- colnames(ribo_counts)
+
+# Find indices for matching count names in metadata_names
+counts_ind <- sapply(counts_names, function(x) {
+  metadata_names[str_detect(pattern = x, string = metadata_names)]
+})
+counts_ind <- counts_ind[lengths(counts_ind) > 0]
+
+# Create a data frame with matched filenames and count names
+counts_ind_df <- data.frame(
+  ribo_filenames = as.character(counts_ind), 
+  ribo_counts_names = names(counts_ind)
+)
+
+# Make order of counts_ind match metadata table
+counts_ind_df <- counts_ind_df[match(metadata_names, counts_ind_df$ribo_filenames), ]
+
+# Select only columns from the counts file that match cell line metadata
+ribo_counts_cell_lines <- ribo_counts[, counts_ind_df$ribo_counts_names]
+
+# Set colnames of rna_counts to match metadata sample IDs
+colnames(ribo_counts_cell_lines) <- sample_metadata_celllines$Sample_ID
+```
+
+## Load gene lengths
+
+```{r}
+# Load gene lengths data
+gene_lengths <- read.table(
+  "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/rnaseq_for_te/data/processed/featureCounts/Medullo_RNA_GRCh38.102.geneCountsCDS.txt",
+  check.names = F, 
+  header = T, 
+  row.names = 1) 
+
+lengths_kb <- gene_lengths$Length / 1000
+# all(rownames(gene_lengths) == rownames(ribo_counts))  # TRUE
+
+```
+
+```{r}
+sample_metadata_celllines$MYC.group <- factor(sample_metadata_celllines$MYC.group)
+```
+
+# Analysis
+
+## Calculate TE values
+
+```{r}
+# Make sure all rownames match up
+all(rownames(ribo_counts) == rownames(gene_lengths))
+all(rownames(ribo_counts) == rownames(rna_counts))
+```
+
+```{r}
+# Remove genes with fewer than 128 avg reads in ribo and RNAseq data
+ribo_counts_filtered <- ribo_counts_cell_lines[which(rowMeans(ribo_counts_cell_lines) > 128), ]
+rna_counts_filtered <- rna_counts_cell_lines[which(rowMeans(rna_counts_cell_lines) >128), ]
+
+rna_ribo_intsct <- intersect(rownames(ribo_counts_filtered), rownames(rna_counts_filtered))
+ribo_counts_filtered <- ribo_counts_filtered[rna_ribo_intsct, ]
+rna_counts_filtered <- rna_counts_filtered[rna_ribo_intsct, ]
+```
+
+```{r}
+# Calculate ribo TPM
+ribo_counts_ind <- match(rownames(ribo_counts_filtered), rownames(gene_lengths))
+ribo_counts_filtered <- ribo_counts_filtered[order(ribo_counts_ind), ]
+rpk_ribo <- ribo_counts_filtered / lengths_kb
+pm_scalingfactors_ribo <- colSums(rpk_ribo)/1000000
+tpm_ribo_cell_lines <- t(t(rpk_ribo) / pm_scalingfactors_ribo)
+
+# Calculate RNA TPM
+rna_counts_ind <- match(rownames(rna_counts_filtered), rownames(gene_lengths))
+rna_counts_filtered <- rna_counts_filtered[order(rna_counts_ind), ]
+rpk_rna <- rna_counts_filtered / lengths_kb
+pm_scalingfactors_rna <- colSums(rpk_rna)/1000000
+tpm_rna_cell_lines <- t(t(rpk_rna) / pm_scalingfactors_rna)
+```
+
+```{r}
+# Write ribo counts and RNA TPMs to file
+write.csv(tpm_ribo_cell_lines, "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/translational_efficiency/results/tables/ribo_TPM_CDSs.csv")
+write.csv(tpm_rna_cell_lines, "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/translational_efficiency/results/tables/rna_TPM_CDSs.csv")
+```
+
+```{r}
+# Calculate TE values
+te <- tpm_ribo_cell_lines / tpm_rna_cell_lines
+te_mat <- as.matrix(te)
+
+# Write raw TE values to file
+write.csv(te_mat, "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/translational_efficiency/results/tables/raw_te_matrix.csv")
+
+# Replace non-real values
+te_mat[is.infinite(te_mat)] <- NA  # Replace Inf in vector by NA
+te_mat[is.na(te_mat)] <- 0  # Replace non-real values with 0
+```
+
+```{r}
+# Log transform TE values
+te_log2 <- log2(te_mat + 0.01)
+te_log2_mat <- as.matrix(te_log2)
+
+# Scale log2-transformed TE values
+te_mat_scale <- te_log2_mat - rowMedians(te_log2_mat)
+```
+
+
+
+```{r}
+# Calculate median TE values per subgroup
+baseMeanPerLvl <- sapply(levels(sample_metadata_celllines$MYC.group), 
+                        function(lvl) 
+                          rowMeans(te_mat_scale[,sample_metadata_celllines[sample_metadata_celllines$MYC.group == lvl,]$Sample_ID] ) )
+
+
+baseMeanPerLvl <- as.data.frame(baseMeanPerLvl, check.names = F) %>%
+  rownames_to_column("gene_id") %>%
+  pivot_longer(!gene_id, values_to = "TE")
+
+ggplot(data = baseMeanPerLvl, aes(x = TE)) +
+    scale_fill_brewer(palette = "Set1") +
+
+  # geom_histogram(aes(x = TE, fill = name), binwidth = 0.1) +
+  
+  geom_density(aes(x = TE, fill = name), color = "black") +
+  # geom_boxploth(aes(x = TE, fill = name, y = -0.05), ) +
+  geom_boxplot(aes(x = TE, fill = name, y = 2.5), 
+               position = ggstance::position_dodgev(height = 100),
+               width = .5, show.legend = FALSE) +
+  facet_grid(name ~ .) +
+  
+  scale_x_continuous(limits = c(-1.5, 1.5)) +
+  labs(x = "log2(riboseq/RNAseq)", fill = "MYC status", y = NULL) +
+  geom_vline(xintercept = log2(1), lty = 2) + theme_classic()
+
+ggsave(filename = "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/translational_efficiency/results/plots/1D_centered.pdf", width = unit(5, "cm"), height = unit(3, "cm"))
+```
+
+```{r}
+# select the ntop genes by variance
+# te_mat_scale <- te_tpm_mat
+te_mat_scale <- t(scale(t(te_log2_mat)))
+
+
+rv <- rowVars(te_mat_scale)
+ntop = 500
+select <- order(rv, decreasing=TRUE)[seq_len(min(ntop, length(rv)))]
+
+# alternative: select rv that is not 0
+# select <- which(rv != 0)
+
+# pca_data <- t(df_filtered[select,])
+pca_data <- t(te_mat_scale[select,])
+# perform a PCA on the data in assay(x) for the selected genes
+pca <- prcomp(pca_data)
+
+# the contribution to the total variance for each component
+percentVar <- pca$sdev^2 / sum( pca$sdev^2 )
+
+# extract the principal components
+pc1 <- pca$x[,1]
+pc2 <- pca$x[,2]
+
+# create data frame with principal components and class
+df <- data.frame(pc1 = pc1, 
+                 pc2 = pc2, 
+                 
+                 # Add column with MYC high or MYC low
+                 class = ifelse(
+                   colnames(te_mat) %in% subset(sample_metadata_celllines, MYC.group == "MYC high")$Sample_ID, 
+                   "MYC high", 
+                   "MYC low"))
+
+
+# create PCA plot
+plt <- ggplot(df, aes(x = pc1, y = pc2, color = class)) +
+  scale_color_brewer(palette = "Set1") +
+  
+  geom_point(size = 2) + 
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(), 
+        axis.line = element_line(colour = "black"))+ 
+  theme(aspect.ratio=1, plot.title = element_text(hjust = 0.5)) +
+  xlab(paste0("PC1: ",round(percentVar[1] * 100),"% variance")) +
+  ylab(paste0("PC2: ",round(percentVar[2] * 100),"% variance")) +
+  coord_fixed() +
+  labs(color = "MYC level", title = "TPM Riboseq / TPM RNA-seq") 
+
+plt_fixed <- egg::set_panel_size(plt, width  = unit(4, "cm"),
+                               height = unit(4, "cm"))
+
+plt
+
+ggsave(plt_fixed, device = "pdf", filename = "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/translational_efficiency/results/plots/1C_TE_CDS_PCA.pdf",
+width = unit(5, "cm"),
+height = unit(5, "cm"))
+
+```
+
+
+```{r}
+t.test(TE ~ name, baseMeanPerLvl, exact = T)
+
+wilcox.test(TE ~ name, baseMeanPerLvl, exact = T)
+```
