@@ -1,7 +1,6 @@
 ---
 title: "Medullo Riboseq Periodicity Plots"
 output: html_notebook
-date: "January 16, 2023"
 author: "Damon Hofman"
 ---
 
@@ -30,7 +29,7 @@ library(gridExtra)
 ```{r}
 # Load metadata table S1A
 sample_metadata <- readxl::read_xlsx(
-  "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/01.26.2023_Table_S1.xlsx", 
+  "Table_S1.xlsx", 
   sheet = 1, 
   col_names = T, 
   skip = 2, 
@@ -45,7 +44,7 @@ sample_metadata_complete <- sample_metadata[which(
 # Gather stats per sample
 
 ```{r}
-ribo_files <- list.files("/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/riboseq/data/processed/RiboseQC/", "results_RiboseQC_all", recursive = T, full.names = T)
+ribo_files <- list.files("/riboseq/data/processed/RiboseQC/", "results_RiboseQC_all", recursive = T, full.names = T)
 names(ribo_files) <- basename(dirname(ribo_files))
 
 ribo_files <- ribo_files[grep("HHT", names(ribo_files), invert = T)]
@@ -142,7 +141,7 @@ for(i in 1:length(ribo_files)){
 ## Overall stats
 
 ```{r}
-ribo_file <- "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/riboseq/data/processed/RiboseQC.merged/Medullo_merged/_results_RiboseQC_all"
+ribo_file <- "/riboseq/data/processed/RiboseQC.merged/Medullo_merged/_results_RiboseQC_all"
 sample <- "Medullo_merged"
 
 # Load riboseqc data
@@ -207,15 +206,6 @@ p1 <- ggplot(data=x.m, aes(x=pos, xend=pos, y=0, yend=value)) +
         axis.text = element_text(size = 10),
         axis.title = element_text(size = 12), 
         legend.position = "none")
-# p1
-# Save plot
-# ggsave(filename = paste0(sample, "_periodicity.pdf"),
-#        plot = g3, 
-#        device = "pdf", 
-#        scale = 1, 
-#        path = "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses/02_results/riboseq_analysis/plots/periodicity/")
-# 
-
 
 framepref_allreads <- data_bar[[rl]] %>%
   group_by(frame) %>%
@@ -251,7 +241,7 @@ p3 <- cowplot::plot_grid(p1, p2, align = "h", axis = "bt", rel_widths = c(3, 1))
 
 p3
 
-cowplot::save_plot(filename = paste0("/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/riboseq/results/plots/", sample, "_periodicity_new.pdf"), p3, ncol = 2, base_height = 3, base_width = 4)
+cowplot::save_plot(filename = paste0("/riboseq/results/plots/", sample, "_periodicity_new.pdf"), p3, ncol = 2, base_height = 3, base_width = 4)
 
 ```
 

@@ -30,10 +30,10 @@ suppressPackageStartupMessages({
 
 ```{r file-locations}
 # Metadata file
-metadata_location <- "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/01.26.2023_Table_S1.xlsx"
+metadata_location <- "Table_S1.xlsx"
 
 # ORF reference table
-ref_table_location <- "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/annotation_files/all_ORFs_ref_table.csv"
+ref_table_location <- "/annotation_files/all_ORFs_ref_table.csv"
 ```
 
 # Load and filter metadata
@@ -57,7 +57,7 @@ sample_metadata_filtered <- subset(sample_metadata_complete, Sample_Type == "Cel
 # Load data and match P-site counts columns
 
 ```{r load-data}
-counts_psites <- read.csv("/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/riboseq/results/tables/S1_riboseq_P_sites_counts.csv", row.names = 1, check.names = F)
+counts_psites <- read.csv("/riboseq/results/tables/S1_riboseq_P_sites_counts.csv", row.names = 1, check.names = F)
 ref_table <- read.csv(ref_table_location)
 ```
 
@@ -111,7 +111,7 @@ res_df <- data.frame(res) %>%
 res_df[which(is.na(res_df$gene_name)), "orf_name"] <- res_df[which(is.na(res_df$gene_name)), "orf_id"]
 
 # Save ORF level differential translation analysis results
-write.csv(res_df, "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses/02_results/notebooks/orf_quantification/ORF_level_diff_transl_analysis_results.csv")
+write.csv(res_df, "ORF_level_diff_transl_analysis_results.csv")
 ```
 
 # Visualization: Volcano Plot (Fig 1K)
@@ -183,9 +183,6 @@ plt <- EnhancedVolcano(
   subtitle = NULL, colAlpha = 1, col = c("grey", "grey", "grey", "red"), pCutoff = 0.01, FCcutoff = 0, xlim = c(-12, 12), labSize = 3, labFace = "bold", max.overlaps = 10, drawConnectors = T, pointSize = 1, lengthConnectors = unit(0, "mm"), axisLabSize = 15, legendLabSize = 10)
 plt
 
-# ggsave(plot = plt, 
-# filename = "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses/02_results/figures/1G_v2.pdf", device = "pdf", path = , width = unit(6, "cm"), height = unit(6, "cm"))
-
 ```
 
 # Visualization: PCA Plot
@@ -222,7 +219,7 @@ ASDURF_plt
 
 # Save the plot
 ggsave(plot = ASDURF_plt,
-       filename = "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses/02_results/figures/S4A_ASDURF_Riboseq.pdf", device = "pdf", path = , width = unit(6, "cm"), height = unit(6, "cm"))
+       filename = "S4A_ASDURF_Riboseq.pdf", device = "pdf", path = , width = unit(6, "cm"), height = unit(6, "cm"))
 
 ```
 

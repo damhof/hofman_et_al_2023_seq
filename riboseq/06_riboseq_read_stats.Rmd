@@ -1,7 +1,6 @@
 ---
 title: "Medullo riboseq stats"
 output: html_notebook
-date: "January 16, 2023"
 author: "Damon Hofman"
 ---
 
@@ -18,7 +17,7 @@ library(ggpubr)
 colors <- pal_jco("default", alpha = 0.7)(9)
 
 # Set plot directory
-plotdir <- "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/riboseq/results/plots/"
+plotdir <- "/riboseq/results/plots/"
 ```
 
 # Description
@@ -43,7 +42,7 @@ Output files:
 
 # Load metadata table S1A
 sample_metadata <- readxl::read_xlsx(
-  "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/01.26.2023_Table_S1.xlsx", 
+  "Table_S1.xlsx", 
   sheet = 1, 
   col_names = T, 
   skip = 2, 
@@ -64,7 +63,7 @@ sample_metadata_complete <- sample_metadata_complete %>%
 ```{r load contaminants data}
 # Process contaminants data
 contaminant_files <- list.files(
-  "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/riboseq/data/processed/bowtie2/", 
+  "/riboseq/data/processed/bowtie2/", 
   pattern = "contaminants.txt", 
   full.names = T, 
   recursive = T)
@@ -147,7 +146,7 @@ ggarrange(
 # Visualization: STAR aligned read stats (Fig S1A and S1B)
 
 ```{r}
-star_files <- list.files("/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/riboseq/data/processed/star_tx/", pattern = ".Log.final.out$", full.names = T, recursive = T)
+star_files <- list.files("/riboseq/data/processed/star_tx/", pattern = ".Log.final.out$", full.names = T, recursive = T)
 
 names(star_files) <- basename(dirname(star_files))
 
@@ -263,7 +262,7 @@ ggarrange(
   common.legend = TRUE, 
   legend = "bottom")
 
-ggsave("/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/riboseq/results/plots/S1A_riboseq_mapping_stats.pdf",
+ggsave("/riboseq/results/plots/S1A_riboseq_mapping_stats.pdf",
        width = unit(7, "cm"),
        height = unit(4, "cm"))
 ```
@@ -271,7 +270,7 @@ ggsave("/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/riboseq
 # Visualization: Frame preference per sample (Fig S1C)
 ```{r}
 # Find riboseqc results files
-riboseqc_files <- grep("HHT", list.files("/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/riboseq/data/processed/RiboseQC/", 
+riboseqc_files <- grep("HHT", list.files("/riboseq/data/processed/RiboseQC/", 
                              pattern = "results_RiboseQC_all", full.names = T, recursive = T), invert = T, value = T)
 
 names(riboseqc_files) <- basename(dirname(riboseqc_files))
@@ -340,7 +339,7 @@ frame_perc_plot <- pivot_longer(perc_reads_df, cols = colnames(perc_reads_df)) %
   
 frame_perc_plot
 
-ggsave("/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/riboseq/results/plots/S1C_footprint_lenghts_distribution.pdf", width = unit(3, "cm"), height = unit(3, "cm"))
+ggsave("/riboseq/results/plots/S1C_footprint_lenghts_distribution.pdf", width = unit(3, "cm"), height = unit(3, "cm"))
 
 ```
 
@@ -366,7 +365,7 @@ inframe_reads_max <- ggplot(data = readlen_max_df, aes(y = frame_preference, x =
 
 inframe_reads_max
 
-ggsave("/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/riboseq/results/plots/1B_inframe_reads_max.pdf", plot = inframe_reads_max, width = unit(5, "cm"), height = unit(4, "cm"))
+ggsave("/riboseq/results/plots/1B_inframe_reads_max.pdf", plot = inframe_reads_max, width = unit(5, "cm"), height = unit(4, "cm"))
 
 mean(readlen_max_df$frame_preference)
 min(readlen_max_df$frame_preference)
@@ -426,7 +425,7 @@ readcats_plot <- ggplot(data = read_cats_annotgenes_perc,
     axis.title.x = element_blank()
   )
 
-ggsave("/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/riboseq/results/plots/1D_read_cats.pdf",
+ggsave("/riboseq/results/plots/1D_read_cats.pdf",
        plot = readcats_plot,
        width = unit(3, "cm"),
        height = unit(3, 'cm'))

@@ -101,16 +101,16 @@ PositionStackAndNudge <- ggproto("PositionStackAndNudge", PositionStack,
 # Input file locations
 
 # Canonical P-site counts matrix
-MANE_mat_location <- "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/riboseq/data/processed/psite_quantification/Medullo_all_Psites_quant_MANE/Medullo_all_Psites_quant_MANE_new_allsamples_psites.txt"
+MANE_mat_location <- "/riboseq/data/processed/psite_quantification/Medullo_all_Psites_quant_MANE/Medullo_all_Psites_quant_MANE_new_allsamples_psites.txt"
 # Non-canonical P-site counts matrix
-gencode_mat_location <- "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/riboseq/data/processed/psite_quantification/Medullo_all_Psites_quant_GENCODEp1_plus_ORFEOME/Medullo_all_Psites_quant_GENCODEp1_plus_ORFEOME_new_allsamples_psites.txt"
+gencode_mat_location <- "/riboseq/data/processed/psite_quantification/Medullo_all_Psites_quant_GENCODEp1_plus_ORFEOME/Medullo_all_Psites_quant_GENCODEp1_plus_ORFEOME_new_allsamples_psites.txt"
 
 # Metadata file
-metadata_location <- "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/01.26.2023_Table_S1.xlsx"  # Change to generic table S1 location
+metadata_location <- "Table_S1.xlsx"  # Change to generic table S1 location
 
 # ORF reference table 
-ref_table_location <- "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/annotation_files/all_ORFs_ref_table.csv"  # Table containing gene_id, tx_id, orf_id, gene_name, biotype & 'canonical' columns, used to match genes to transcripts and ORFs
-noncanonical_orf_data_location <- "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/annotation_files/noncanonical_ORFs_data.csv"   # = Table S1L
+ref_table_location <- "/annotation_files/all_ORFs_ref_table.csv"  # Table containing gene_id, tx_id, orf_id, gene_name, biotype & 'canonical' columns, used to match genes to transcripts and ORFs, based on S1L
+noncanonical_orf_data_location <- "/annotation_files/noncanonical_ORFs_data.csv"   # = Table S1L
 ```
 
 ```{r}
@@ -173,7 +173,7 @@ colnames(counts_psites) <- sample_metadata_complete$Sample_ID
 
 
 ```{r}
-write.csv(counts_psites, "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/riboseq/results/tables/S1_riboseq_P_sites_counts.csv", quote = F)
+write.csv(counts_psites, "/riboseq/results/tables/S1_riboseq_P_sites_counts.csv", quote = F)
 ```
 
 
@@ -182,12 +182,12 @@ write.csv(counts_psites, "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_anal
 ```{r load ORF lengths}
 # Load predicted P sites for each ORF or transcript to calculate ORF lengths
 bed_canonical_p_all <- data.table::fread(
-  "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/riboseq/data/processed/psite_quantification/Medullo_all_Psites_quant_MANE/bedfiles/MANE.GRCh38.v1.0.ensembl_genomic.nochr.gtf_psites_p0.sorted.bed",
+  "/riboseq/data/processed/psite_quantification/Medullo_all_Psites_quant_MANE/bedfiles/MANE.GRCh38.v1.0.ensembl_genomic.nochr.gtf_psites_p0.sorted.bed",
   col.names = c("chrom", "start", "end", "ref_id", "frame", "strand")) %>%
   subset(!grepl("pATG|pST", .$frame)) 
 
 bed_novel_p_all <- data.table::fread(
-  "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/riboseq/data/processed/psite_quantification/Medullo_all_Psites_quant_GENCODEp1_plus_ORFEOME/bedfiles/GENCODEpI_plus_ORFEOME3.bed.orfs_new.gtf_psites_p0.sorted.bed",
+  "/riboseq/data/processed/psite_quantification/Medullo_all_Psites_quant_GENCODEp1_plus_ORFEOME/bedfiles/GENCODEpI_plus_ORFEOME3.bed.orfs_new.gtf_psites_p0.sorted.bed",
   col.names = c("chrom", "start", "end", "ref_id", "frame", "strand")) %>%
   subset(!grepl("pATG|pST", .$frame)) 
 
@@ -270,7 +270,7 @@ ORFs_keep <- rownames(subset(mat_cutoff_summary, number_samples >= 5))
 
 # write.csv(mat_cutoff_summary, "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses/02_results/notebooks/orf_quantification/ORF_translation_summary.csv")
 
-write.csv(mat_cutoff_extended, "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/riboseq/results/tables/S1_ORF_translation_extended.csv", row.names = F)
+write.csv(mat_cutoff_extended, "/riboseq/results/tables/S1_ORF_translation_extended.csv", row.names = F)
 ```
 
 
@@ -314,7 +314,7 @@ ggplot(data = orfs_per_sample_canonical, aes(y = num_orfs, x = Sample_ID)) +
   theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 3))
 
 
-ggsave("/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/riboseq/results/plots/1C_num_translated_CDS.pdf", 
+ggsave("/riboseq/results/plots/1C_num_translated_CDS.pdf", 
        width = unit(4, "cm"),
        height = unit(4, "cm"))
 
@@ -518,7 +518,7 @@ hm <- Heatmap(
   # raster_resize_mat = TRUE
   )
 
-pdf("/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/riboseq/results/plots/1I_MYClvls_new.pdf", width = 4, height = 4)
+pdf("/riboseq/results/plots/1I_MYClvls_new.pdf", width = 4, height = 4)
 ht <- draw(
   hm,
   heatmap_legend_side = "bottom",
@@ -573,7 +573,7 @@ ggplot(data = counts_summary, aes(x = biotype, y = mean, fill = biotype, color =
   theme(legend.position = "none", axis.text.x = element_text(size = 6))
 
 ggsave(
-  filename = "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/riboseq/results/plots/1J_log2.pdf", device = "pdf", path = , width = unit(3, "cm"), height = unit(3, "cm"))
+  filename = "/riboseq/results/plots/1J_log2.pdf", device = "pdf", path = , width = unit(3, "cm"), height = unit(3, "cm"))
 ```
 
 
