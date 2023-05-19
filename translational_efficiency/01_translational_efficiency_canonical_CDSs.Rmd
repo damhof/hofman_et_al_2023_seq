@@ -1,7 +1,6 @@
 ---
 title: "Gene-level TPM-based TE calculation, cell lines"
 output: html_notebook
-date: "March 1, 2023"
 author: "Damon Hofman"
 ---
 
@@ -51,7 +50,7 @@ colors <- c("#0073C2FF", "#EFC000FF", "#868686FF", "#DC0000FF", "#7AA6DCFF", "#1
 
 # Load metadata table S1A
 sample_metadata <- readxl::read_xlsx(
-  "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/01.26.2023_Table_S1.xlsx", 
+  "Table_S1.xlsx", 
   sheet = 1, 
   col_names = T, 
   skip = 2, 
@@ -75,7 +74,7 @@ sample_metadata_celllines$MYC.group <- as.factor(sample_metadata_celllines$MYC.g
 
 ```{r}
 # Load RNAseq counts data
-rna_counts <- read.csv("/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/rnaseq_for_te/results/S1_RNA_for_te_canonical_counts.csv", check.names = F, row.names = 1)
+rna_counts <- read.csv("/rnaseq_for_te/results/S1_RNA_for_te_canonical_counts.csv", check.names = F, row.names = 1)
 
 # Extract the column names from rna_counts that match the RNASeq_file_names in sample_metadata_celllines
 match_counts <- unique(str_extract(sample_metadata_celllines$RNASeq_file_names, str_c(colnames(rna_counts), collapse = "|")))
@@ -95,7 +94,7 @@ colnames(rna_counts_cell_lines) <- sample_metadata_celllines$Sample_ID
 
 ```{r}
 # Load riboseq counts data (generated with /riboseq/02_riboseq_canonical_counts_processing.Rmd)
-ribo_counts <- read.csv("/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/riboseq/results/tables/S1_riboseq_canonical_counts.csv", check.names = F, row.names = 1)
+ribo_counts <- read.csv("/riboseq/results/tables/S1_riboseq_canonical_counts.csv", check.names = F, row.names = 1)
 
 # Match ribo_counts columns to metadata rows
 
@@ -130,7 +129,7 @@ colnames(ribo_counts_cell_lines) <- sample_metadata_celllines$Sample_ID
 ```{r}
 # Load gene lengths data
 gene_lengths <- read.table(
-  "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/rnaseq_for_te/data/processed/featureCounts/Medullo_RNA_GRCh38.102.geneCountsCDS.txt",
+  "/rnaseq_for_te/data/processed/featureCounts/Medullo_RNA_GRCh38.102.geneCountsCDS.txt",
   check.names = F, 
   header = T, 
   row.names = 1) 
@@ -182,8 +181,8 @@ tpm_rna_cell_lines <- t(t(rpk_rna) / pm_scalingfactors_rna)
 
 ```{r}
 # Write ribo counts and RNA TPMs to file
-write.csv(tpm_ribo_cell_lines, "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/translational_efficiency/results/tables/ribo_TPM_CDSs.csv")
-write.csv(tpm_rna_cell_lines, "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/translational_efficiency/results/tables/rna_TPM_CDSs.csv")
+write.csv(tpm_ribo_cell_lines, "/translational_efficiency/results/tables/ribo_TPM_CDSs.csv")
+write.csv(tpm_rna_cell_lines, "/translational_efficiency/results/tables/rna_TPM_CDSs.csv")
 ```
 
 ```{r}
@@ -192,7 +191,7 @@ te <- tpm_ribo_cell_lines / tpm_rna_cell_lines
 te_mat <- as.matrix(te)
 
 # Write raw TE values to file
-write.csv(te_mat, "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/translational_efficiency/results/tables/raw_te_matrix.csv")
+write.csv(te_mat, "/translational_efficiency/results/tables/raw_te_matrix.csv")
 
 # Replace non-real values
 te_mat[is.infinite(te_mat)] <- NA  # Replace Inf in vector by NA
@@ -237,7 +236,7 @@ ggplot(data = baseMeanPerLvl, aes(x = TE)) +
   labs(x = "log2(riboseq/RNAseq)", fill = "MYC status", y = NULL) +
   geom_vline(xintercept = log2(1), lty = 2) + theme_classic()
 
-ggsave(filename = "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/translational_efficiency/results/plots/1D_centered.pdf", width = unit(5, "cm"), height = unit(3, "cm"))
+ggsave(filename = "/translational_efficiency/results/plots/1D_centered.pdf", width = unit(5, "cm"), height = unit(3, "cm"))
 ```
 
 ```{r}
@@ -296,7 +295,7 @@ plt_fixed <- egg::set_panel_size(plt, width  = unit(4, "cm"),
 
 plt
 
-ggsave(plt_fixed, device = "pdf", filename = "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/translational_efficiency/results/plots/1C_TE_CDS_PCA.pdf",
+ggsave(plt_fixed, device = "pdf", filename = "/translational_efficiency/results/plots/1C_TE_CDS_PCA.pdf",
 width = unit(5, "cm"),
 height = unit(5, "cm"))
 

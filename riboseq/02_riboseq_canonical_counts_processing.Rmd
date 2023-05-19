@@ -19,7 +19,7 @@ library(tidyverse)
 ```{r}
 # Load riboseq counts data
 ribo_counts <- read.table(
-  "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/riboseq/data/processed/featureCounts/CDS_counts.txt", 
+  "/riboseq/data/processed/featureCounts/CDS_counts.txt", 
   check.names = F, 
   header = T, 
   row.names = 1) %>%
@@ -30,5 +30,5 @@ colnames(ribo_counts) <- sapply(basename(colnames(ribo_counts)),
                                                  function(x)
                                                    gsub(".Aligned.sortedByCoord.out.bam", "", x))
 
-write.csv(ribo_counts, "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/riboseq/results/tables/S1_riboseq_canonical_counts.csv")
+write.csv(ribo_counts, "/riboseq/results/tables/S1_riboseq_canonical_counts.csv")
 ```

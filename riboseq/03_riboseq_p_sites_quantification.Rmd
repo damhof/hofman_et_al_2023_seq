@@ -1,7 +1,6 @@
 ---
 title: "ORF-level P-site quantification"
 author: "Damon Hofman"
-date: "January 23, 2023"
 output: html_notebook
 ---
 

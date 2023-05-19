@@ -47,7 +47,7 @@ colors <- c("#0073C2FF", "#EFC000FF", "#868686FF", "#DC0000FF", "#7AA6DCFF", "#1
 In this section, I load the featurecounts output table, and clean up the table to write to a .csv file for table S1.
 ```{r}
 # Load featurecounts table
-canonical_RNA_counts_all <- read.table("/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/rnaseq_regular/data/processed/featurecounts/medullo_allsamples.counts", check.names = F)
+canonical_RNA_counts_all <- read.table("/rnaseq_regular/data/processed/featurecounts/medullo_allsamples.counts", check.names = F)
 
 # Fix sample column names
 colnames(canonical_RNA_counts_all) <- sapply(basename(colnames(canonical_RNA_counts_all)),
@@ -59,7 +59,7 @@ canonical_RNA_counts_all <- canonical_RNA_counts_all %>%
   dplyr::select(6:ncol(.))
 
 # Write to .csv
-write.csv(canonical_RNA_counts_all, "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/rnaseq_regular/results/tables/S1_RNA_fulllength_canonical_counts.csv", quote = F)
+write.csv(canonical_RNA_counts_all, "/rnaseq_regular/results/tables/S1_RNA_fulllength_canonical_counts.csv", quote = F)
 ```
 
 
@@ -76,7 +76,7 @@ I select only cell line metadata, since we're going to use the cell line counts 
 # Load and process metadata table
 
 # Load metadata
-sample_metadata <- readxl::read_xlsx("/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/01.26.2023_Table_S1.xlsx", sheet = 1, col_names = T, skip = 2, .name_repair = "universal")
+sample_metadata <- readxl::read_xlsx("Table_S1.xlsx", sheet = 1, col_names = T, skip = 2, .name_repair = "universal")
 
 # Filter samples with both RNAseq and riboseq data
 sample_metadata_complete <- sample_metadata[which(
@@ -147,7 +147,7 @@ plt <- ggplot(pcaData, aes(PC1, PC2, color=MYC.group)) +
 plt_fixed <- set_panel_size(plt, width  = unit(4, "cm"),
                                height = unit(4, "cm"))
 
-ggsave(plt_fixed, device = "pdf", filename = "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/rnaseq_regular/results/plots/1E_RNA_CDS_DEA_PCA.pdf",
+ggsave(plt_fixed, device = "pdf", filename = "/rnaseq_regular/results/plots/1E_RNA_CDS_DEA_PCA.pdf",
        width = unit(5, "cm"),
        height = unit(5, "cm"))
 ```
@@ -193,7 +193,7 @@ barplot(sort(ranks, decreasing = T))
 
 ```{r}
 # Load msigdb object if already generated
-msigdb.hs <- readRDS("/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/rnaseq_regular/data/msigdb_hs.rds")
+msigdb.hs <- readRDS("/rnaseq_regular/data/msigdb_hs.rds")
 
 # If not already generated, create new object using ExperimentHub
 # eh = ExperimentHub()
@@ -339,7 +339,7 @@ fgseaRes_all_df <- data.frame(fgseaRes_all) %>%
   rowwise() %>% 
   mutate_if(is.list, ~paste(unlist(.), collapse = '|')) 
 
-write.csv(fgseaRes_all_df, "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/rnaseq_regular/results/tables/S1_GSEA_results_all.csv", quote = F, row.names = F)
+write.csv(fgseaRes_all_df, "/rnaseq_regular/results/tables/S1_GSEA_results_all.csv", quote = F, row.names = F)
 ```
 
 ```{r}
@@ -369,7 +369,7 @@ ggplot(fgseaRes_all_subset, aes(pathway, NES, fill = geneset)) +
     axis.text.x = element_text(size = 6), strip.text.y = element_text(size = 5), legend.position = "none", strip.clip = "off")
 
 ggsave(
-  device = "pdf", filename = "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses_final/rnaseq_regular/results/plots/S1F_GSEA_results.pdf", width = unit(5, "cm"), height = unit(4, "cm"))
+  device = "pdf", filename = "/rnaseq_regular/results/plots/S1F_GSEA_results.pdf", width = unit(5, "cm"), height = unit(4, "cm"))
 
 ```
 
