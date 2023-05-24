@@ -2,25 +2,12 @@
 
 # 01_run_riboseq_pipeline.sh
 #
-# Short script description
-#
-#
-# List of outputs
-#
-#
 # Authors:
 # Damon Hofman (d.a.hofman-3@prinsesmaximacentrum.nl)
 # Jip van Dinter (j.t.vandinter-3@prinsesmaximacentrum.nl)
 #
 # Date: 24-04-2023
 
-###########################################
-# To-do List
-###########################################
-# TODO: Fix config file to reflect all necessary variables in all sub scripts
-# TODO: Testrun pipeline with subsampled file
-# TODO: update usage code
-###########################################
 set -uo pipefail
 
 function usage() {
