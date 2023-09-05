@@ -1,5 +1,10 @@
 # Hofman et al., 2023 - Ribo-seq & RNA-seq Analysis
 
+
+[![DOI](https://zenodo.org/badge/629514135.svg)](https://zenodo.org/badge/latestdoi/629514135)
+
+
+
 ## Repository Overview
 
 This repository contains the code and resources associated with the scientific paper by Hofman et al., published in BioRxiv on May 6, 2023 (DOI: [10.1101/2023.05.04.539399](https://doi.org/10.1101/2023.05.04.539399)). The repository is maintained by @damhof and includes scripts used for the analysis presented in the paper.
