@@ -16,8 +16,9 @@ Input files:
 * ORF reference table
 
 Output files:
-* cleaned up P site counts matrix
-* table with translated ORFs
+* cleaned up P site counts matrix (Table S1K)
+* table with translated ORFs (Table S1N)
+* Figures 1C and S1C
 * figures relating to ORF translation (Fig 1I heatmap & Fig 1J bar plot)
 
 
@@ -173,6 +174,7 @@ colnames(counts_psites) <- sample_metadata_complete$Sample_ID
 
 
 ```{r}
+# Write table with ORF-level ribo-seq P-site counts (Table S1K)
 write.csv(counts_psites, "/riboseq/results/tables/S1_riboseq_P_sites_counts.csv", quote = F)
 ```
 
@@ -211,7 +213,6 @@ ORF_lengths <- ORF_lengths %>%
 ## Selection of translation cutoff
 
 In the following section, I calculate the P-sites per million (ppm) of each ORF, which is calculated the same way as transcripts per million (TPM) values, but uses P-sites counts instead of transcript counts.
-6567 ORFs have a mean ppm < 1. 
 
 ```{r}
 row_indices <- match(rownames(ORF_lengths), rownames(counts_psites))
@@ -250,9 +251,9 @@ abline(v = dens$x[threshold])
 
 
 ## Calculating the total number translated ORFs
+Code in this section was used to generate Table S1N
 
 Next, I make a list of ORFs to keep based on a ppm > 1 in at least 5 samples. 
-Based on these criteria, 5582 ORFs are removed.
 
 ```{r select ORFs from low cluster to keep}
 # Make logical table indicating whether ORF is above or below cutoff
@@ -268,13 +269,12 @@ mat_cutoff_extended <- mat_cutoff_summary %>%
 
 ORFs_keep <- rownames(subset(mat_cutoff_summary, number_samples >= 5))
 
-# write.csv(mat_cutoff_summary, "/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_analyses/02_results/notebooks/orf_quantification/ORF_translation_summary.csv")
-
 write.csv(mat_cutoff_extended, "/riboseq/results/tables/S1_ORF_translation_extended.csv", row.names = F)
 ```
 
 
 ## Calculating the number of translated canonical CDSs
+Code in this section was used to generate Figure 1C
 
 ```{r}
 # Select canonical CDSs from logical cutoff table
@@ -320,6 +320,106 @@ ggsave("/riboseq/results/plots/1C_num_translated_CDS.pdf",
 
 ```
 
+## Calculating the number of translated noncanonical ORFs
+This section was used to generate figure S1C
+
+```{r}
+# Select non-canonical ORFs from logical cutoff table
+mat_cutoff_noncanonical <- mat_cutoff[which(rownames(mat_cutoff) %in% rownames(subset(mat_cutoff_summary, canonical == "non-canonical"))), ]
+
+# Calculate number and percentage of translated CDSs per samples
+# orfs_per_sample_canonical <- data.frame(Sample_ID = colnames(mat_cutoff_canonical),
+#                                         num_orfs = colSums(mat_cutoff_canonical)) %>%
+#   mutate(perc_canonical = num_orfs / nrow(subset(ref_table, canonical == "Canonical"))) %>%
+#   left_join(sample_metadata_complete)
+
+orfs_per_sample_noncanonical <- data.frame(Sample_ID = colnames(mat_cutoff_noncanonical),
+                                        num_orfs = colSums(mat_cutoff_noncanonical)) %>%
+  left_join(sample_metadata_complete)
+
+max(orfs_per_sample_noncanonical$num_orfs)
+min(orfs_per_sample_noncanonical$num_orfs)
+mean(orfs_per_sample_noncanonical$num_orfs)
+```
+
+
+```{r}
+# Plot with number of translated non-canonical ORFs per sample and average for all samples
+orfs_per_sample_noncanonical[grep(pattern = "Tissue", x = orfs_per_sample_noncanonical$Sample_Type), ]$Sample_Type <- "Tissue"
+
+ggplot(data = orfs_per_sample_noncanonical, aes(y = num_orfs, x = Sample_ID)) +
+  geom_bar(stat = "identity", fill = colors[1]) +
+  geom_hline(yintercept = mean(orfs_per_sample_noncanonical$num_orfs), linetype = 2) +
+  geom_text(data = data.frame(Type = "Cell line"), aes(label = round(mean(orfs_per_sample_noncanonical$num_orfs))), x = -1, y = mean(orfs_per_sample_noncanonical$num_orfs), 
+            inherit.aes = FALSE, color = "grey20", hjust = .6, vjust = .5, size = 8 / .pt) +
+  coord_cartesian(clip = "off", ylim = c(1, NA)) +
+  scale_y_continuous(expand = c(0,0)) +
+  labs(y = "Translated non-canonical proteins (ppm > 1)", x = "Samples") +
+  facet_grid(~ Sample_Type, scales = "free_x", space = "free_x") +
+  
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 4))
+
+
+# ggsave("/riboseq/results/plots/S1C_num_translated_NC_ORFs.pdf",
+       # width = unit(3, "cm"),
+       # height = unit(4, "cm"))
+
+```
+
+```{r}
+# Plot with number of translated non-canonical ORFs per sample and average per subgroup (tissue vs cell lines)
+
+# Calculate mean for each subgroup
+orfs_per_sample_noncanonical[grep(pattern = "Tissue", x = orfs_per_sample_noncanonical$Sample_Type), ]$Sample_Type <- "Tissue"
+mean_tissue <- mean(orfs_per_sample_noncanonical$num_orfs[orfs_per_sample_noncanonical$Sample_Type == "Tissue"])
+mean_cell_line <- mean(orfs_per_sample_noncanonical$num_orfs[orfs_per_sample_noncanonical$Sample_Type == "Cell line"])
+
+
+ggplot(data = orfs_per_sample_noncanonical, aes(y = num_orfs, x = Sample_ID)) +
+  geom_bar(stat = "identity", fill = colors[1]) +
+
+  # Add mean line for Tissue
+  geom_hline(data = subset(orfs_per_sample_noncanonical, Sample_Type == "Tissue"), aes(yintercept = mean_tissue), linetype = 2) +
+  geom_text(data = data.frame(Type = "Tissue"), aes(label = round(mean_tissue)), x = -1, y = mean_tissue, 
+            inherit.aes = FALSE, color = "grey20", hjust = .6, vjust = .5, size = 8 / .pt) +
+
+  # Add mean line for Cell line
+  geom_hline(data = subset(orfs_per_sample_noncanonical, Sample_Type == "Cell line"), aes(yintercept = mean_cell_line), linetype = 2) +
+  geom_text(data = data.frame(Type = "Cell line"), aes(label = round(mean_cell_line)), x = -1, y = mean_cell_line, 
+            inherit.aes = FALSE, color = "grey20", hjust = .6, vjust = .5, size = 8 / .pt) +
+
+  coord_cartesian(clip = "off", ylim = c(1, NA)) +
+  scale_y_continuous(expand = c(0,0)) +
+  labs(y = "Translated non-canonical proteins (ppm > 1)", x = "Samples") +
+  facet_grid(~ Sample_Type, scales = "free_x", space = "free_x") +
+  
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 4))
+
+ggsave("/riboseq/results/plots/S1C_num_translated_NC_ORFs_persubgroup.pdf",
+       width = unit(3, "cm"),
+       height = unit(4, "cm"))
+```
+
+```{r}
+# Compare group means and calculate statistics
+
+# Calculate p values per subgroup
+tissue_values <- orfs_per_sample_noncanonical$num_orfs[orfs_per_sample_noncanonical$Sample_Type == "Tissue"]
+cell_line_values <- orfs_per_sample_noncanonical$num_orfs[orfs_per_sample_noncanonical$Sample_Type == "Cell line"]
+
+# Calculate and print the range for each subgroup
+tissue_range <- range(tissue_values)
+cat("Range for Tissue: ", tissue_range[1], "to", tissue_range[2], "\n")
+
+cell_line_range <- range(cell_line_values)
+cat("Range for Cell line: ", cell_line_range[1], "to", cell_line_range[2], "\n")
+
+t_test_result <- t.test(tissue_values, cell_line_values)
+cat("T-test results:") 
+t_test_result
+```
 
 # Normalized P site counts in all samples
 

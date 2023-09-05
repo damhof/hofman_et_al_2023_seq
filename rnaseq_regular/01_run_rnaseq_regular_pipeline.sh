@@ -79,11 +79,13 @@ if [[ -z ${CONFIG+x} ]]; then
     exit 1
 fi
 
-# Load configuration variables
-source $CONFIG
+# Load config file
+echo "Loading configuration from: $CONFIG"
+source $CONFIG || { echo "Failed to load configuration"; exit 1; }
 
 # Load general functions
-source ${scriptdir}/general_functions.sh
+echo "Loading general functions from: ${scriptdir}/general_functions.sh"
+source ${scriptdir}/general_functions.sh || { echo "Failed to load general functions"; exit 1; }
 
 # Create a unique prefix for the names for this run of the pipeline
 # This makes sure that runs can be identified
@@ -91,7 +93,12 @@ run=$(uuidgen | tr '-' ' ' | awk '{print $1}')
 
 # Find samples
 echo "$(date '+%Y-%m-%d %H:%M:%S') Finding samples..."
-get_samples $project_data_folder $data_folder $paired_end
+get_samples $project_data_folder $data_folder $paired_end || { echo "Failed to get samples"; exit 1; }
+
+printf "%s\n" "${r1_files[@]}" > r1_files.txt
+printf "%s\n" "${r2_files[@]}" > r2_files.txt
+printf "%s\n" "${sample_ids[@]}" > sample_ids.txt
+printf "%s\n" "${specific_samples[@]}" > samples.txt
 
 # Create output directories
 mkdir -p log/${run}/{trimgalore,star,samtools,howarewestrandedhere} 

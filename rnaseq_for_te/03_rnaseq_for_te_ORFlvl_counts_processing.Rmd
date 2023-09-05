@@ -1,0 +1,77 @@
+---
+title: "RNAseq counts processing for ORF-level translational efficiency analysis"
+output: html_notebook
+---
+
+This notebook describes the steps taken to process the ORF-level RNA-seq counts (Table S1I). These counts were also used for ORF-level translational efficiency analyses (see Figure S1H).
+
+```{r setup, include = FALSE}
+library(DESeq2)
+library(tidyverse)
+library(ggrepel)
+```
+
+```{r}
+# Specify file locations
+metadata_location <- "Table_S1.xlsx"
+ref_table_location <- "/annotation_files/all_ORFs_ref_table.csv"
+rna_salmon_location <- "/rnaseq_for_te/data/processed/salmon_quant/"
+```
+
+```{r}
+# Load metadata table S1A
+sample_metadata <- readxl::read_xlsx(
+  metadata_location, 
+  sheet = 1, 
+  col_names = T, 
+  skip = 2, 
+  .name_repair = "universal")
+
+# Filter samples with both RNAseq and riboseq data
+sample_metadata_complete <- sample_metadata[which(
+  !is.na(sample_metadata$RNASeq_file_names) &
+    !is.na(sample_metadata$RiboSeq_file_names..final.)), ]
+
+# Get RNA sample names based on filenames
+sample_metadata_complete <- sample_metadata_complete %>%
+  mutate(rna_name = gsub("_R1.*", "", gsub(";.*", "", .$RNASeq_file_names)))
+```
+
+```{r}
+# Import RNA counts
+rna_salmon_files <- list.files(
+  path = rna_salmon_location,
+  pattern = "quant.sf",
+  full.names = TRUE,
+  recursive = TRUE
+)
+
+names(rna_salmon_files) <- basename(dirname(rna_salmon_files))
+```
+
+```{r}
+# Extract the names from rna_counts that match the RNASeq_file_names in sample_metadata_celllines
+match_counts <- unique(str_extract(sample_metadata_complete$RNASeq_file_names, str_c(names(rna_salmon_files), collapse = "|")))  ## Need to fix!
+
+# Subset rna_counts based on the matched columns
+rna_counts_complete <- rna_salmon_files[match_counts]
+
+# Find matching metadata
+metadata_matches <- grep(paste(match_counts, collapse = "|"), sample_metadata_complete$RNASeq_file_names)
+sample_metadata_complete <- sample_metadata_complete[metadata_matches, ]
+
+names(rna_counts_complete) <- sample_metadata_complete$Sample_ID
+```
+
+```{r}
+rna.salmon.tx <- tximport(rna_counts_complete,
+                          type = "salmon",
+                          txOut = T,
+                          countsFromAbundance = "lengthScaledTPM",
+                          dropInfReps = T)
+
+counts_RNA <- rna.salmon.tx$counts
+counts_RNA <- round(counts_RNA, 0)
+
+write.csv(counts_RNA, "/rnaseq_for_te/results/S1_RNAseq_ORFlvl_salmoncounts_all.csv", quote = F, row.names = T, col.names = T)
+```

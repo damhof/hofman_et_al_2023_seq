@@ -10,16 +10,17 @@ In this notebook, I calculate TE values on the ORF level in cell line data. I us
 Input files:
 - Sample metadata (Supplementary table S1A)
 - ORF reference table (based on supplementary table S1L)
-- Salmon RNA-seq counts
-- P-site counts for canonical and non-canonical ORFs (Supplementary table S1I)
+- Salmon RNA-seq counts (Table S1I)
+- P-site counts for canonical and non-canonical ORFs (Supplementary table S1K)
 - BED files (generated in P-site quantification pipeline) containing ORF lengths
 
 Output files
 - TE density plots
-- PCA plots based on TE values
+- PCA plots based on TE values (incl. Fig S1H)
 
 
 ```{r setup, include = FALSE}
+# Load necessary libraries
 library(rtracklayer)
 library(tximport)
 library(stringr)
@@ -31,16 +32,15 @@ library(ggrepel)
 ```
 
 ```{r}
+# Define custom colors for plots
 colors <- c("#0073C2FF", "#EFC000FF", "#868686FF", "#DC0000FF", "#7AA6DCFF", "#1B1B1BFF", "#FF7F0EFF", "#17BCEFFF", "#009E73", "#CC79A7")
 ```
 
 # Load data
 
 ```{r file-locations}
-# Metadata file
+# Specify file locations
 metadata_location <- "Table_S1.xlsx"
-
-# ORF reference table
 ref_table_location <- "/annotation_files/all_ORFs_ref_table.csv"
 ```
 
@@ -76,69 +76,34 @@ sample_metadata_celllines$MYC.group <- as.factor(sample_metadata_celllines$MYC.g
 ref_table <- read.csv(ref_table_location)
 ```
 
-
-## Load and filter rnaseq counts
+## RNA-seq counts
 
 ```{r}
-# Import RNA counts
-rna_salmon_files <- list.files(
-  path = "/rnaseq_for_te/data/processed/salmon_quant/",
-  pattern = "quant.sf",
-  full.names = TRUE,
-  recursive = TRUE
-)
+# Load ORF level RNA-seq counts (Table S1I)
+rna_ORFlvl_counts_file <- "/rnaseq_for_te/results/S1_RNAseq_ORFlvl_salmoncounts_all.csv"
+rna_ORFlvl_counts <- read.csv(rna_ORFlvl_counts_file, header = T, row.names = 1, check.names = F)
+```
 
-names(rna_salmon_files) <- basename(dirname(rna_salmon_files))
+```{r match-columns-rna}
+# Extract the column names from rna_counts that match the RNASeq_file_names in sample_metadata_celllines
+match_counts <- unique(str_extract(sample_metadata_celllines$Sample_ID, str_c(colnames(rna_ORFlvl_counts), collapse = "|")))
 
-# Extract the names from rna_counts that match the RNASeq_file_names in sample_metadata_celllines
-match_counts <- unique(str_extract(sample_metadata_celllines$RNASeq_file_names, str_c(names(rna_salmon_files), collapse = "|")))
-
-# Subset rna_counts based on the matched columns
-rna_counts_cell_lines <- rna_salmon_files[match_counts]
+# Reorder the columns of P-site counts data frame to match the order of metadata
+rna_ORFlvl_counts_ordered <- rna_ORFlvl_counts[, match_counts]
 
 # Find matching metadata
-metadata_matches <- grep(paste(match_counts, collapse = "|"), sample_metadata_celllines$RNASeq_file_names)
-sample_metadata_celllines <- sample_metadata_celllines[metadata_matches, ]
+metadata_matches <- grep(paste(match_counts, collapse = "|"), sample_metadata_celllines$Sample_ID)
+sample_metadata_matched <- sample_metadata_celllines[metadata_matches, ]
 
-names(rna_counts_cell_lines) <- sample_metadata_celllines$Sample_ID
-```
-
-Use the following code block if you want to use transcript-level counts for TE calculations:
-```{r}
-rna.salmon.tx <- tximport(rna_counts_cell_lines, 
-                          type = "salmon", 
-                          txOut = T, 
-                          countsFromAbundance = "lengthScaledTPM", 
-                          dropInfReps = T)
-
-counts_RNA <- rna.salmon.tx$counts
-counts_RNA <- round(counts_RNA, 0)
-```
-
-Use the following code block if you want to use gene-level counts for TE calculations (all transcripts from same parent gene thus have the same RNA-seq counts). This is the method used for the paper.
-```{r}
-rna.salmon.gene <- tximport(rna_counts_cell_lines, 
-                          type = "salmon", 
-                          txOut = F, 
-                          countsFromAbundance = "lengthScaledTPM", 
-                          dropInfReps = T, tx2gene = ref_table[, c("orf_id", "gene_id")])
-
-
-
-gene_counts_RNA <- rna.salmon.gene$counts
-gene_counts_RNA <- round(gene_counts_RNA, 0)
-tx_counts_RNA <- data.frame(gene_counts_RNA, check.names = F) %>%
-  rownames_to_column("gene_id") %>%
-  left_join(ref_table[,c("orf_id", "gene_id")]) %>%
-  column_to_rownames("orf_id") %>%
-  select(-"gene_id")
+colnames(rna_ORFlvl_counts_ordered) <- sample_metadata_matched$Sample_ID
 ```
 
 
-## Load and filter P site data
+
+## P-site counts
 
 ```{r}
-# Load P site counts
+# Load P site counts (Table S1K)
 counts_psites <- read.csv("/riboseq/results/tables/S1_riboseq_P_sites_counts.csv", row.names = 1, check.names = F)
 ```
 
@@ -165,7 +130,7 @@ setdiff(rownames(counts_psites), rownames(tx_counts_RNA))
 ## Load ORF lengths
 
 ```{r load ORF lengths}
-# Load predicted P sites for each ORF or transcript to calculate ORF lengths
+# Load predicted P sites for each ORF or transcript to calculate ORF lengths (output of 01_run_riboseq_pipeline.sh)
 bed_canonical_p_all <- data.table::fread(
   "/riboseq/data/processed/psite_quantification/Medullo_all_Psites_quant_MANE/bedfiles/MANE.GRCh38.v1.0.ensembl_genomic.nochr.gtf_psites_p0.sorted.bed",
   col.names = c("chrom", "start", "end", "ref_id", "frame", "strand")) %>%
@@ -193,21 +158,83 @@ lengths_kb <- ORF_lengths$length_kb
 ```
 
 
-# Analysis
+# Exploratory data analysis
 
-## Calculate TE values for all ORFs
+
 ```{r}
-# Remove genes with fewer than 128 avg reads in ribo and RNAseq data
-ribo_counts_filtered <- counts_psites_ordered[which(rowMeans(counts_psites_ordered) > 128), ]
-rna_counts_filtered <- tx_counts_RNA[which(rowMeans(tx_counts_RNA) > 128), ]
+# Assuming count_matrix is your RNA-seq matrix
+# Flatten the matrix into vectors based on whether rownames contain "CDS"
+cds_counts <- as.vector(as.matrix(counts_psites_ordered[grep("CDS", rownames(counts_psites_ordered)), ]))
+non_cds_counts <- as.vector(as.matrix(counts_psites_ordered[-grep("CDS", rownames(counts_psites_ordered)), ]))
 
-# Filter RNA and Ribo data for genes that have > 128 reads avg in both datasets
+# Log-transform the count values, using log1p to add 1 before taking log to avoid -Inf
+log_cds_counts <- log1p(cds_counts)
+log_non_cds_counts <- log1p(non_cds_counts)
+
+# Calculate the density of the log-transformed count values
+cds_density <- density(log_cds_counts)
+non_cds_density <- density(log_non_cds_counts)
+
+# Plot the density without the x-axis labels (xaxt = "n")
+plot(cds_density, main="Density of P-site Counts", xlab="Counts", ylab="Density", xaxt="n", col="blue", lty=1, ylim=c(0, max(c(cds_density$y, non_cds_density$y))))
+lines(non_cds_density, col="red", lty=2)
+
+# Transform the x-axis to the original scale by exponentiating
+x_at <- axTicks(1)
+labels <- round(expm1(x_at))
+axis(1, at = x_at, labels = labels)
+
+# Add a legend
+legend("topright", legend=c("CDS", "Non-CDS"), col=c("blue", "red"), lty=c(1, 2))
+
+# Add a vertical line that intersects the x-axis 
+abline(v = log1p(4), lty=3, col="green")
+```
+
+```{r}
+# Assuming count_matrix is your RNA-seq matrix
+# Flatten the matrix into vectors based on whether rownames contain "CDS"
+cds_counts <- as.vector(as.matrix(rna_ORFlvl_counts_ordered[grep("CDS", rownames(rna_ORFlvl_counts_ordered)), ]))
+non_cds_counts <- as.vector(as.matrix(rna_ORFlvl_counts_ordered[-grep("CDS", rownames(rna_ORFlvl_counts_ordered)), ]))
+
+# Log-transform the count values, using log1p to add 1 before taking log to avoid -Inf
+log_cds_counts <- log1p(cds_counts)
+log_non_cds_counts <- log1p(non_cds_counts)
+
+# Calculate the density of the log-transformed count values
+cds_density <- density(log_cds_counts)
+non_cds_density <- density(log_non_cds_counts)
+
+# Plot the density without the x-axis labels (xaxt = "n")
+plot(cds_density, main="Density of RNA-seq counts", xlab="Counts", ylab="Density", xaxt="n", col="blue", lty=1, ylim=c(0, max(c(cds_density$y, non_cds_density$y))))
+lines(non_cds_density, col="red", lty=2)
+
+# Transform the x-axis to the original scale by exponentiating
+x_at <- axTicks(1)
+labels <- round(expm1(x_at))
+axis(1, at = x_at, labels = labels)
+
+# Add a legend
+legend("topright", legend=c("CDS", "Non-CDS"), col=c("blue", "red"), lty=c(1, 2))
+
+# Add a vertical line that intersects the x-axis at the transformed value of 10
+abline(v = log1p(4), lty=3, col="green")
+```
+
+# TE calculations
+
+## Filtering
+
+```{r}
+# Remove genes with fewer than 4 avg reads in ribo and RNAseq data
+ribo_counts_filtered <- counts_psites_ordered[which(rowMeans(counts_psites_ordered) > 4), ]
+rna_counts_filtered <- rna_ORFlvl_counts_ordered[which(rowMeans(rna_ORFlvl_counts_ordered) > 4), ]
+
+# Filter RNA and Ribo data for genes that have > 4 reads avg in both datasets
 rna_ribo_intsct <- intersect(rownames(ribo_counts_filtered), rownames(rna_counts_filtered))
 ribo_counts_filtered <- ribo_counts_filtered[rna_ribo_intsct, ]
 rna_counts_filtered <- rna_counts_filtered[rna_ribo_intsct, ]
-
 ```
-
 
 ```{r}
 # Get ORF lengths for filtered genes
@@ -220,7 +247,11 @@ all(rownames(ORF_lengths_filtered) == rownames(rna_counts_filtered))
 all(rownames(ribo_counts_filtered) == rownames(rna_counts_filtered))
 
 lengths_kb <- ORF_lengths_filtered$length_kb
+```
 
+## P-site TPM (PPM) (Table S1L)
+
+```{r ribo_tpm}
 # Calculate riboseq TPM
 ribo_counts_ind <- match(rownames(ribo_counts_filtered), rownames(ORF_lengths_filtered))  # Match ribo and ORF lengths rownames
 ribo_counts_filtered <- ribo_counts_filtered[order(ribo_counts_ind), ]  
@@ -229,21 +260,32 @@ pm_scalingfactors_ribo <- colSums(rpk_ribo)/1000000
 tpm_ribo <- t(t(rpk_ribo) / pm_scalingfactors_ribo)
 tpm_ribo_log2 <- log2(tpm_ribo + 0.1)
 
+# write.csv(tpm_ribo, "/translational_efficiency/results/tables/S1_Riboseq_PPM_ORFlvl_celllines.csv", quote = F, row.names = T, col.names = T)
+
+```
+
+## RNA-seq TPM (Table S1J)
+
+```{r}
 # Calculate RNAseq TPM
 rna_counts_ind <- match(rownames(rna_counts_filtered), rownames(ORF_lengths_filtered))
 rna_counts_filtered <- rna_counts_filtered[order(rna_counts_ind), ]
 rpk_rna <- rna_counts_filtered / lengths_kb
 pm_scalingfactors_rna <- colSums(rpk_rna)/1000000
 tpm_rna <- t(t(rpk_rna) / pm_scalingfactors_rna)
-
 tpm_rna_log2 <- log2(tpm_rna + 0.01)
+
+# write.csv(tpm_rna, "/translational_efficiency/results/tables/S1_RNAseq_TPM_ORFlvl_celllines.csv", quote = F, row.names = T, col.names = T)
 ```
 
+## Calculate TE (Table S1M)
 
 ```{r}
 # Calculate TE values
 te <- tpm_ribo / tpm_rna
 te_mat <- as.matrix(te)
+
+# write.csv(te_mat, "/translational_efficiency/results/tables/S1_TE_ORFlvl_celllines.csv", quote = F, row.names = T, col.names = T)
 
 te_mat[is.infinite(te_mat)] <- NA  # Replace Inf in vector by NA
 te_mat[is.na(te_mat)] <- 0
@@ -254,256 +296,289 @@ te_mat[is.na(te_mat)] <- 0
 # Log transform TE values
 te_log2 <- log2(te_mat + 0.01)
 te_log2_mat <- as.matrix(te_log2)
-```
 
-
-```{r}
-# Plot TE densities per subgroup (not centered)
-
-# Calculate median TE values per subgroup
-baseMeanPerLvl <- sapply(levels(sample_metadata_celllines$MYC.group), 
-                        function(lvl) 
-                          rowMeans(te_log2_mat[,sample_metadata_celllines[sample_metadata_celllines$MYC.group == lvl,]$Sample_ID] ) )
-
-
-
-baseMeanPerLvl <- as.data.frame(baseMeanPerLvl, check.names = F) %>%
-  rownames_to_column("gene_id") %>%
-  pivot_longer(!gene_id, values_to = "TE")
-
-ggplot(data = baseMeanPerLvl, aes(x = TE)) +
-    scale_fill_brewer(palette = "Set1") +
-
-  # geom_histogram(aes(x = TE, fill = name), binwidth = 0.1) +
-  
-  geom_density(aes(x = TE, fill = name), color = "black") +
-  # geom_boxploth(aes(x = TE, fill = name, y = -0.05), ) +
-  geom_boxplot(aes(x = TE, fill = name, y = 0.6), 
-               position = ggstance::position_dodgev(height = 100),
-               width = .05, show.legend = FALSE) +
-  facet_grid(name ~ .) +
-  scale_x_continuous(limits = c(-6, 6)) +
-  labs(x = "log2(riboseq/RNAseq)", fill = "MYC status", y = NULL) +
-  geom_vline(xintercept = log2(1), lty = 2) + theme_classic()
-```
-
-```{r}
-# Center log2 TE values
+# Scale TE values
 te_mat_scale <- te_log2_mat - rowMedians(te_log2_mat)
-
 ```
 
+# Analysis of TE values
+
+## Overall analysis
+
+
+### TE distribution - all ORFs
+
 ```{r}
-# Plot TE densities per subgroup (centered)
-
-
 # Calculate median TE values per subgroup
-baseMeanPerLvl <- sapply(levels(sample_metadata_celllines$MYC.group), 
-                        function(lvl) 
-                          rowMeans(te_mat_scale[,sample_metadata_celllines[sample_metadata_celllines$MYC.group == lvl,]$Sample_ID] ) )
+baseMeanPerLvl <- sapply(levels(sample_metadata_celllines$MYC.group),
+                        function(lvl) rowMeans(te_mat_scale[,sample_metadata_celllines[sample_metadata_celllines$MYC.group == lvl,]$Sample_ID]))
 
-
-baseMeanPerLvl <- as.data.frame(baseMeanPerLvl, check.names = F) %>%
+# Convert to data frame and pivot
+baseMeanPerLvl <- as.data.frame(baseMeanPerLvl, check.names = FALSE) %>%
   rownames_to_column("gene_id") %>%
   pivot_longer(!gene_id, values_to = "TE")
 
-ggplot(data = baseMeanPerLvl, aes(x = TE)) +
-    scale_fill_brewer(palette = "Set1") +
-
-  # geom_histogram(aes(x = TE, fill = name), binwidth = 0.1) +
-  
+# Create the plot
+plt <- ggplot(data = baseMeanPerLvl, aes(x = TE)) +
+  scale_fill_brewer(palette = "Set1") +
   geom_density(aes(x = TE, fill = name), color = "black") +
-  # geom_boxploth(aes(x = TE, fill = name, y = -0.05), ) +
-  geom_boxplot(aes(x = TE, fill = name, y = 2.5), 
-               position = ggstance::position_dodgev(height = 100),
-               width = .2, show.legend = FALSE) +
+  geom_boxplot(
+    aes(x = TE, fill = name, y = 2.5),
+    position = ggstance::position_dodgev(height = 100),
+    width = 0.05, show.legend = FALSE
+  ) +
   facet_grid(name ~ .) +
-  scale_x_continuous(limits = c(-2, 2)) +
-  labs(x = "log2(riboseq/RNAseq)", fill = "MYC status", y = NULL) +
-  geom_vline(xintercept = log2(1), lty = 2) + theme_classic()
-```
-
-
-
-```{r}
-# select the ntop genes by variance
-te_mat_scale <- t(scale(t(te_log2_mat)))
-
-rv <- rowVars(te_mat_scale)
-ntop = 500
-select <- order(rv, decreasing=TRUE)[seq_len(min(ntop, length(rv)))]
-pca_data <- t(te_mat_scale[select,])
-
-# perform a PCA on the data in assay(x) for the selected genes
-pca <- prcomp(pca_data)
-
-# the contribution to the total variance for each component
-percentVar <- pca$sdev^2 / sum( pca$sdev^2 )
-
-# extract the principal components
-pc1 <- pca$x[,1]
-pc2 <- pca$x[,2]
-
-# create data frame with principal components and class
-df <- data.frame(pc1 = pc1, 
-                 pc2 = pc2, 
-                 
-                 # Add column with MYC high or MYC low
-                 class = ifelse(
-                   colnames(te_mat) %in% subset(sample_metadata_celllines, MYC.group == "MYC high")$Sample_ID, 
-                   "MYC high", 
-                   "MYC low"))
-
-
-# create PCA plot
-plt <- ggplot(df, aes(x = pc1, y = pc2, color = class)) +
-  scale_color_brewer(palette = "Set1") +
-  
-  geom_point(size = 2) + 
-  theme(panel.grid.major = element_blank(), 
-        panel.grid.minor = element_blank(),
-        panel.background = element_blank(), 
-        axis.line = element_line(colour = "black"))+ 
-  theme(aspect.ratio=1, plot.title = element_text(hjust = 0.5)) +
-  xlab(paste0("PC1: ",round(percentVar[1] * 100),"% variance")) +
-  ylab(paste0("PC2: ",round(percentVar[2] * 100),"% variance")) +
-  coord_fixed() +
-  labs(color = "MYC level", title = "TPM Riboseq / TPM RNA-seq") 
-
-plt
-
-plt_fixed <- egg::set_panel_size(plt, width  = unit(4, "cm"),
-                               height = unit(4, "cm"))
-```
-
-## Calculate TE values for non-canonical ORFs only
-
-```{r}
-NC_ORFs <- subset(ref_table, canonical == "Non-canonical")$orf_id
-
-# Remove genes with fewer than 128 avg reads in ribo and RNAseq data
-counts_psites_NC <- counts_psites_ordered[which(rownames(counts_psites_ordered) %in% NC_ORFs), ]
-counts_rna_NC <- tx_counts_RNA[which(rownames(tx_counts_RNA) %in% NC_ORFs), ]
-
-ribo_counts_filtered <- counts_psites_NC[which(rowMeans(counts_psites_NC) > 20), ]
-rna_counts_filtered <- counts_rna_NC[which(rowMeans(counts_rna_NC) > 20), ]
-
-# Filter RNA and Ribo data for genes that have > 128 reads avg in both datasets
-rna_ribo_intsct <- intersect(rownames(ribo_counts_filtered), rownames(rna_counts_filtered))
-ribo_counts_filtered <- ribo_counts_filtered[rna_ribo_intsct, ]
-rna_counts_filtered <- rna_counts_filtered[rna_ribo_intsct, ]
-```
-
-
-```{r}
-# Get ORF lengths for filtered genes
-ORF_lengths_filtered <- ORF_lengths[which(rownames(ORF_lengths) %in% rownames(ribo_counts_filtered)), ]
-lengths_kb <- ORF_lengths_filtered$length_kb
-
-# Calculate riboseq TPM
-ribo_counts_ind <- match(rownames(ribo_counts_filtered), rownames(ORF_lengths_filtered))  # Match ribo and ORF lengths rownames
-ribo_counts_filtered <- ribo_counts_filtered[order(ribo_counts_ind), ]  
-rpk_ribo <- ribo_counts_filtered / lengths_kb
-pm_scalingfactors_ribo <- colSums(rpk_ribo)/1000000
-tpm_ribo <- t(t(rpk_ribo) / pm_scalingfactors_ribo)
-tpm_ribo_log2 <- log2(tpm_ribo + 0.1)
-
-# Calculate RNAseq TPM
-rna_counts_ind <- match(rownames(rna_counts_filtered), rownames(ORF_lengths_filtered))
-rna_counts_filtered <- rna_counts_filtered[order(rna_counts_ind), ]
-rpk_rna <- rna_counts_filtered / lengths_kb
-pm_scalingfactors_rna <- colSums(rpk_rna)/1000000
-tpm_rna <- t(t(rpk_rna) / pm_scalingfactors_rna)
-tpm_rna_log2 <- log2(tpm_rna + 0.1)
-
-# Calculate TE values
-te <- tpm_ribo / tpm_rna
-te_mat <- as.matrix(te)
-te_mat[is.infinite(te_mat)] <- NA  # Replace Inf in vector by NA
-te_mat[is.na(te_mat)] <- 0
-te_log2 <- log2(te_mat + 0.01)
-te_log2_mat <- as.matrix(te_log2)
-```
-
-
-### Plot subgroup TE densities
-```{r}
-# Calculate median TE values per subgroup
-baseMeanPerLvl <- sapply(levels(sample_metadata_celllines$MYC.group), 
-                        function(lvl) 
-                          rowMeans(te_log2_mat[,sample_metadata_celllines[sample_metadata_celllines$MYC.group == lvl,]$Sample_ID] ) )
-
-
-
-baseMeanPerLvl <- as.data.frame(baseMeanPerLvl, check.names = F) %>%
-  rownames_to_column("gene_id") %>%
-  pivot_longer(!gene_id, values_to = "TE")
-
-ggplot(data = baseMeanPerLvl, aes(x = TE)) +
-    scale_fill_brewer(palette = "Set1") +
-  
-  geom_density(aes(x = TE, fill = name), color = "black") +
-  geom_boxplot(aes(x = TE, fill = name, y = 0.3), 
-               position = ggstance::position_dodgev(height = 100),
-               width = .05, show.legend = FALSE) +
-  facet_grid(name ~ .) +
-  
   scale_x_continuous(limits = c(-6, 6)) +
   labs(x = "log2(riboseq/RNAseq)", fill = "MYC status", y = NULL) +
-  geom_vline(xintercept = log2(1), lty = 2) + theme_classic()
-
-```
-
-```{r}
-# select the ntop genes by variance
-te_mat_scale <- t(scale(t(te_log2_mat)))
-
-rv <- rowVars(te_mat_scale)
-ntop = 500
-select <- order(rv, decreasing=TRUE)[seq_len(min(ntop, length(rv)))]
-pca_data <- t(te_mat_scale[select,])
-
-# perform a PCA on the data in assay(x) for the selected genes
-pca <- prcomp(pca_data)
-
-# the contribution to the total variance for each component
-percentVar <- pca$sdev^2 / sum( pca$sdev^2 )
-
-# extract the principal components
-pc1 <- pca$x[,1]
-pc2 <- pca$x[,2]
-
-# create data frame with principal components and class
-df <- data.frame(pc1 = pc1, 
-                 pc2 = pc2, 
-                 
-                 # Add column with MYC high or MYC low
-                 class = ifelse(
-                   colnames(te_mat) %in% subset(sample_metadata_complete, MYC.group == "MYC high")$Sample_ID, 
-                   "MYC high", 
-                   "MYC low"))
-
-
-# create PCA plot
-plt <- ggplot(df, aes(x = pc1, y = pc2, color = class)) +
-  scale_color_brewer(palette = "Set1") +
-  
-  geom_point(size = 2) + 
-  theme(panel.grid.major = element_blank(), 
-        panel.grid.minor = element_blank(),
-        panel.background = element_blank(), 
-        axis.line = element_line(colour = "black"))+ 
-  theme(aspect.ratio=1, plot.title = element_text(hjust = 0.5)) +
-  xlab(paste0("PC1: ",round(percentVar[1] * 100),"% variance")) +
-  ylab(paste0("PC2: ",round(percentVar[2] * 100),"% variance")) +
-  coord_fixed() +
-  labs(color = "MYC level", title = "TPM Riboseq / TPM RNA-seq") 
+  geom_vline(xintercept = log2(1), lty = 2) +
+  theme_classic()
 
 plt
 
-plt_fixed <- egg::set_panel_size(plt, width  = unit(4, "cm"),
-                               height = unit(4, "cm"))
+# Uncomment the following line to save the plot
+# ggsave(filename = "/translational_efficiency/results/plots/TE_dist_allORFs_celllines.pdf", width = unit(5, "cm"), height = unit(3, "cm"))
+
+```
+
+### PCA plot
+```{r}
+# Calculate row variances and select top 500
+rv <- rowVars(te_mat_scale)
+ntop <- 500
+select <- order(rv, decreasing = TRUE)[seq_len(min(ntop, length(rv)))]
+
+# Perform PCA
+pca_data <- t(te_mat_scale[select,])
+pca <- prcomp(pca_data)
+
+# Variance contribution
+percentVar <- pca$sdev^2 / sum(pca$sdev^2)
+
+# Principal components
+pc1 <- pca$x[,1]
+pc2 <- pca$x[,2]
+
+# Create data frame with principal components and class
+df <- data.frame(
+  pc1 = pc1,
+  pc2 = pc2,
+  class = ifelse(
+    colnames(te_mat) %in% subset(sample_metadata_celllines, MYC.group == "MYC high")$Sample_ID,
+    "MYC high",
+    "MYC low"
+  )
+)
+
+# Create PCA plot
+plt <- ggplot(df, aes(x = pc1, y = pc2, color = class)) +
+  scale_color_brewer(palette = "Set1") +
+  geom_point(size = 2) +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.background = element_blank(),
+    axis.line = element_line(colour = "black"),
+    aspect.ratio = 1,
+    plot.title = element_text(hjust = 0.5)
+  ) +
+  xlab(paste0("PC1: ", round(percentVar[1] * 100), "% variance")) +
+  ylab(paste0("PC2: ", round(percentVar[2] * 100), "% variance")) +
+  coord_fixed() +
+  labs(color = "MYC level", title = "TPM Riboseq / TPM RNA-seq")
+
+plt
+
+plt_fixed <- egg::set_panel_size(plt, width = unit(4, "cm"), height = unit(4, "cm"))
+
+# Uncomment the following line to save the plot
+# ggsave(plt_fixed, device = "pdf", filename = "/translational_efficiency/results/plots/PCA_all_ORFs_celllines.pdf", width = unit(5, "cm"), height = unit(5, "cm"))
+```
+
+
+## Canonical ORFs
+
+```{r}
+# Select only canonical CDS regions
+te_mat_scale_canonical <- te_mat_scale[grepl("CDS", rownames(te_mat_scale)), ]
+```
+
+```{r}
+# Calculate median TE values per subgroup
+baseMeanPerLvl <- sapply(levels(sample_metadata_celllines$MYC.group),
+                        function(lvl) rowMeans(te_mat_scale_canonical[,sample_metadata_celllines[sample_metadata_celllines$MYC.group == lvl,]$Sample_ID]))
+
+# Convert to data frame and pivot
+baseMeanPerLvl <- as.data.frame(baseMeanPerLvl, check.names = FALSE) %>%
+  rownames_to_column("gene_id") %>%
+  pivot_longer(!gene_id, values_to = "TE")
+
+# Create the plot
+plt <- ggplot(data = baseMeanPerLvl, aes(x = TE)) +
+  scale_fill_brewer(palette = "Set1") +
+  geom_density(aes(x = TE, fill = name), color = "black") +
+  geom_boxplot(
+    aes(x = TE, fill = name, y = 2.5),
+    position = ggstance::position_dodgev(height = 100),
+    width = 0.05, show.legend = FALSE
+  ) +
+  facet_grid(name ~ .) +
+  scale_x_continuous(limits = c(-6, 6)) +
+  labs(x = "log2(riboseq/RNAseq)", fill = "MYC status", y = NULL) +
+  geom_vline(xintercept = log2(1), lty = 2) +
+  theme_classic()
+
+plt
+
+# Uncomment the following line to save the plot
+# ggsave(filename = "/translational_efficiency/results/plots/TE_dist_canonical_ORFs_celllines.pdf", width = unit(5, "cm"), height = unit(3, "cm"))
 
 ```
 
 
+
+```{r}
+# Calculate row variances and select top 500
+rv <- rowVars(te_mat_scale_canonical)
+ntop <- 500
+select <- order(rv, decreasing = TRUE)[seq_len(min(ntop, length(rv)))]
+
+# Perform PCA
+pca_data <- t(te_mat_scale_canonical[select,])
+pca <- prcomp(pca_data)
+
+# Variance contribution
+percentVar <- pca$sdev^2 / sum(pca$sdev^2)
+
+# Principal components
+pc1 <- pca$x[,1]
+pc2 <- pca$x[,2]
+
+# Create data frame with principal components and class
+df <- data.frame(
+  pc1 = pc1,
+  pc2 = pc2,
+  class = ifelse(
+    colnames(te_mat) %in% subset(sample_metadata_celllines, MYC.group == "MYC high")$Sample_ID,
+    "MYC high",
+    "MYC low"
+  )
+)
+
+# Create PCA plot
+plt <- ggplot(df, aes(x = pc1, y = pc2, color = class)) +
+  scale_color_brewer(palette = "Set1") +
+  geom_point(size = 2) +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.background = element_blank(),
+    axis.line = element_line(colour = "black"),
+    aspect.ratio = 1,
+    plot.title = element_text(hjust = 0.5)
+  ) +
+  xlab(paste0("PC1: ", round(percentVar[1] * 100), "% variance")) +
+  ylab(paste0("PC2: ", round(percentVar[2] * 100), "% variance")) +
+  coord_fixed() +
+  labs(color = "MYC level", title = "TPM Riboseq / TPM RNA-seq")
+
+plt
+
+plt_fixed <- egg::set_panel_size(plt, width = unit(4, "cm"), height = unit(4, "cm"))
+
+# Uncomment the following line to save the plot
+# ggsave(plt_fixed, device = "pdf", filename = "/translational_efficiency/results/plots/PCA_canonical_ORFs_celllines.pdf", width = unit(5, "cm"), height = unit(5, "cm"))
+```
+
+## Non-canonical ORFs (Fig S1H)
+
+```{r}
+te_mat_scale_NC <- te_mat_scale[!grepl("CDS", rownames(te_mat_scale)), ]
+```
+
+
+```{r}
+# Calculate median TE values per subgroup
+baseMeanPerLvl <- sapply(levels(sample_metadata_celllines$MYC.group),
+                        function(lvl) rowMeans(te_mat_scale_NC[,sample_metadata_celllines[sample_metadata_celllines$MYC.group == lvl,]$Sample_ID]))
+
+# Convert to data frame and pivot
+baseMeanPerLvl <- as.data.frame(baseMeanPerLvl, check.names = FALSE) %>%
+  rownames_to_column("gene_id") %>%
+  pivot_longer(!gene_id, values_to = "TE")
+
+# Create the plot
+plt <- ggplot(data = baseMeanPerLvl, aes(x = TE)) +
+  scale_fill_brewer(palette = "Set1") +
+  geom_density(aes(x = TE, fill = name), color = "black") +
+  geom_boxplot(
+    aes(x = TE, fill = name, y = 1.5),
+    position = ggstance::position_dodgev(height = 100),
+    width = 0.05, show.legend = FALSE
+  ) +
+  facet_grid(name ~ .) +
+  scale_x_continuous(limits = c(-6, 6)) +
+  labs(x = "log2(riboseq/RNAseq)", fill = "MYC status", y = NULL) +
+  geom_vline(xintercept = log2(1), lty = 2) +
+  theme_classic()
+
+plt
+
+# Uncomment the following line to save the plot
+# ggsave(filename = "/translational_efficiency/results/plots/TE_dist_NC_ORFs_celllines.pdf", width = unit(5, "cm"), height = unit(3, "cm"))
+
+```
+
+
+
+```{r}
+# Calculate row variances and select top 500
+rv <- rowVars(te_mat_scale_NC)
+ntop <- 500
+select <- order(rv, decreasing = TRUE)[seq_len(min(ntop, length(rv)))]
+
+# Perform PCA
+pca_data <- t(te_mat_scale_NC[select,])
+pca <- prcomp(pca_data)
+
+# Variance contribution
+percentVar <- pca$sdev^2 / sum(pca$sdev^2)
+
+# Principal components
+pc1 <- pca$x[,1]
+pc2 <- pca$x[,2]
+
+# Create data frame with principal components and class
+df <- data.frame(
+  pc1 = pc1,
+  pc2 = pc2,
+  class = ifelse(
+    colnames(te_mat) %in% subset(sample_metadata_celllines, MYC.group == "MYC high")$Sample_ID,
+    "MYC high",
+    "MYC low"
+  )
+)
+
+# Create PCA plot
+plt <- ggplot(df, aes(x = pc1, y = pc2, color = class)) +
+  scale_color_brewer(palette = "Set1") +
+  geom_point(size = 2) +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.background = element_blank(),
+    axis.line = element_line(colour = "black"),
+    aspect.ratio = 1,
+    plot.title = element_text(hjust = 0.5)
+  ) +
+  xlab(paste0("PC1: ", round(percentVar[1] * 100), "% variance")) +
+  ylab(paste0("PC2: ", round(percentVar[2] * 100), "% variance")) +
+  coord_fixed() +
+  labs(color = "MYC level", title = "TPM Riboseq / TPM RNA-seq")
+
+plt
+
+plt_fixed <- egg::set_panel_size(plt, width = unit(4, "cm"), height = unit(4, "cm"))
+
+# Uncomment the following line to save the plot
+# ggsave(plt_fixed, device = "pdf", filename = "/translational_efficiency/results/plots/S1H_TE_NCorfs_celllines.pdf", width = unit(5, "cm"), height = unit(5, "cm"))
+```

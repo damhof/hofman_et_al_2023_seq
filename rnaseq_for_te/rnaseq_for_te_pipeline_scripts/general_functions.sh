@@ -62,7 +62,7 @@ function get_samples() {
     info "$((i+1))    ${samples[i]}"
   done
 
-  export r1_files=${r1_files[@]}
-  export sample_ids=${sample_ids[@]}
-  export samples=${samples[@]}
+  export r1_files
+  export sample_ids
+  export samples
 }

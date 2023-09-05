@@ -13,8 +13,8 @@ Input files:
 - canonical CDS riboseq counts - (table S1E)
 
 Output files
-- .csv file containing table with TE values for cell line samples (Table S1G)
-- PDF file with plot of TE value distributions for MYC high and MYC low samples (Fig 1D)
+- .csv file containing table with TE values of annotated CDSs for cell line samples (Table S1G)
+- PDF file with plot of TE value distributions for MYC high and MYC low samples (Fig 1H)
 - PDF file with PCA plot for samples, based on TE values (Fig 1G)
 
 ```{r setup, include = FALSE}
@@ -180,9 +180,9 @@ tpm_rna_cell_lines <- t(t(rpk_rna) / pm_scalingfactors_rna)
 ```
 
 ```{r}
-# Write ribo counts and RNA TPMs to file
-write.csv(tpm_ribo_cell_lines, "/translational_efficiency/results/tables/ribo_TPM_CDSs.csv")
-write.csv(tpm_rna_cell_lines, "/translational_efficiency/results/tables/rna_TPM_CDSs.csv")
+# Write ribo TPMs and RNA TPMs to file
+write.csv(tpm_ribo_cell_lines, "/translational_efficiency/results/tables/ribo_TPM_CDSs.csv")  # Table S1F  
+write.csv(tpm_rna_cell_lines, "/translational_efficiency/results/tables/rna_TPM_CDSs.csv")  # Table S1D
 ```
 
 ```{r}
@@ -191,7 +191,7 @@ te <- tpm_ribo_cell_lines / tpm_rna_cell_lines
 te_mat <- as.matrix(te)
 
 # Write raw TE values to file
-write.csv(te_mat, "/translational_efficiency/results/tables/raw_te_matrix.csv")
+write.csv(te_mat, "/translational_efficiency/results/tables/raw_te_matrix.csv")  # Table S1G
 
 # Replace non-real values
 te_mat[is.infinite(te_mat)] <- NA  # Replace Inf in vector by NA
@@ -236,15 +236,11 @@ ggplot(data = baseMeanPerLvl, aes(x = TE)) +
   labs(x = "log2(riboseq/RNAseq)", fill = "MYC status", y = NULL) +
   geom_vline(xintercept = log2(1), lty = 2) + theme_classic()
 
-ggsave(filename = "/translational_efficiency/results/plots/1D_centered.pdf", width = unit(5, "cm"), height = unit(3, "cm"))
+ggsave(filename = "/translational_efficiency/results/plots/1H_centered.pdf", width = unit(5, "cm"), height = unit(3, "cm"))
 ```
 
 ```{r}
 # select the ntop genes by variance
-# te_mat_scale <- te_tpm_mat
-te_mat_scale <- t(scale(t(te_log2_mat)))
-
-
 rv <- rowVars(te_mat_scale)
 ntop = 500
 select <- order(rv, decreasing=TRUE)[seq_len(min(ntop, length(rv)))]
@@ -295,7 +291,7 @@ plt_fixed <- egg::set_panel_size(plt, width  = unit(4, "cm"),
 
 plt
 
-ggsave(plt_fixed, device = "pdf", filename = "/translational_efficiency/results/plots/1C_TE_CDS_PCA.pdf",
+ggsave(plt_fixed, device = "pdf", filename = "/translational_efficiency/results/plots/1G_TE_CDS_PCA.pdf",
 width = unit(5, "cm"),
 height = unit(5, "cm"))
 

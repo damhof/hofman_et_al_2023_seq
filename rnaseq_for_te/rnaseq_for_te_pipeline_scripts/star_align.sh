@@ -7,6 +7,8 @@ module load STAR/${star_version}
 module load samtools/${samtools_version}
 
 # Load files
+mapfile -t sample_ids < sample_ids.txt
+
 sample_id="${sample_ids[$((SLURM_ARRAY_TASK_ID-1))]}"
 r1_filtered="${outdir}/bowtie2/${sample_id}/${sample_id}_filtered.fastq.gz"
 

@@ -8,6 +8,8 @@ module load fastqc/${fastqc_version}
 module load trimgalore/${trimgalore_version}
 
 # Load files
+mapfile -t r1_files < r1_files.txt
+mapfile -t sample_ids < sample_ids.txt
 r1_file="${r1_files[$((SLURM_ARRAY_TASK_ID-1))]}"
 
 # Set names

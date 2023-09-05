@@ -1,0 +1,399 @@
+---
+title: "Gene-level TPM-based TE calculation, all samples"
+output: html_notebook
+author: "Damon Hofman"
+---
+
+# Introduction
+In this notebook, I performed translational efficiency calculation on only the 'good' samples. I decided to also remove tissue 6, so we can make a comparison between all G3/G4 and SHH samples.
+Towards the end of the notebook, I also made a comparison between three MYC high and three MYC low samples, where MYC high and low were based on the RNA-seq expression levels. 
+
+```{r setup, include = FALSE}
+library(rtracklayer)
+library(tximport)
+library(stringr)
+library(apeglm)
+library(tidyverse)
+library(DESeq2)
+library(BiocParallel)
+library(ggrepel)
+library(RColorBrewer)
+library(EnhancedVolcano)
+library(ComplexHeatmap)
+library(fgsea)
+library(msigdb)
+library(ExperimentHub)
+library(GSEABase)
+library(org.Hs.eg.db)
+library(clusterProfiler)
+library(AnnotationDbi)
+library(ggstance)
+library(ggpubr)
+```
+
+```{r}
+colors <- c("#0073C2FF", "#EFC000FF", "#868686FF", "#DC0000FF", "#7AA6DCFF", "#1B1B1BFF", "#FF7F0EFF", "#17BCEFFF", "#009E73", "#CC79A7")
+```
+
+# Load data
+
+```{r}
+# Process metadata table and select cell line data
+
+# Load metadata table S1A
+sample_metadata <- readxl::read_xlsx(
+  "Table_S1.xlsx", 
+  sheet = 1, 
+  col_names = T, 
+  skip = 2, 
+  .name_repair = "universal")
+
+# Filter samples with both RNAseq and riboseq data
+sample_metadata_complete <- sample_metadata[which(
+  !is.na(sample_metadata$RNASeq_file_names) &
+    !is.na(sample_metadata$RiboSeq_file_names..final.)), ]
+
+# Get RNA sample names based on filenames
+sample_metadata_complete <- sample_metadata_complete %>%
+  mutate(rna_name = gsub("_R1.*", "", gsub(";.*", "", .$RNASeq_file_names)))
+
+# Only keep tissue samples
+sample_metadata_complete <- subset(sample_metadata_complete, Sample_Type != "Cell line")
+
+# Remove samples
+sample_metadata_complete <- sample_metadata_complete %>%
+  filter(!Sample_ID %in% c("Tissue_10", "Tissue_1", "Tissue_2", "Tissue_12")) %>%
+  filter(!grepl("Autopsy", Sample_ID))
+
+rownames(sample_metadata_complete) <- sample_metadata_complete$Sample_ID
+
+sample_metadata_complete$G3G4_v_rest <- ifelse(
+  sample_metadata_complete$Molecular.subgroup %in% c("Group 3/4", "Group 3", "Group 4"), "G3/4", sample_metadata_complete$Molecular.subgroup)
+
+sample_metadata_complete$G3G4_v_rest <- as.factor(sample_metadata_complete$G3G4_v_rest)
+sample_metadata_complete$Molecular.subgroup <- as.factor(sample_metadata_complete$Molecular.subgroup)
+
+```
+
+
+
+## Load and filter rnaseq counts
+
+```{r}
+# Load RNAseq counts data
+rna_counts <- read.csv("/hpc/pmc_vanheesch/projects/Damon/Medulloblastoma_ORFs/Medulloblastoma_analyses_final/rnaseq_for_te/results/S1_RNA_for_te_canonical_counts.csv", check.names = F, row.names = 1)
+
+# Extract the column names from rna_counts that match the RNASeq_file_names in sample_metadata_complete
+match_counts <- unique(str_extract(sample_metadata_complete$RNASeq_file_names, str_c(colnames(rna_counts), collapse = "|")))
+
+# Subset rna_counts based on the matched columns
+rna_counts_tissues <- rna_counts[, match_counts]
+
+# Find matching metadata
+metadata_matches <- grep(paste(match_counts, collapse = "|"), sample_metadata_complete$RNASeq_file_names)
+sample_metadata_complete <- sample_metadata_complete[metadata_matches, ]
+
+colnames(rna_counts_tissues) <- sample_metadata_complete$Sample_ID
+```
+
+
+## Load and filter riboseq counts
+
+```{r}
+# Load riboseq counts data (generated with /riboseq/02_riboseq_canonical_counts_processing.Rmd)
+ribo_counts <- read.csv("/riboseq/results/tables/S1_riboseq_canonical_counts.csv", check.names = F, row.names = 1)
+
+# Match ribo_counts columns to metadata rows
+
+# Extract metadata and count names
+metadata_names <- sample_metadata_complete$RiboSeq_file_names..final.
+counts_names <- colnames(ribo_counts)
+
+# Find indices for matching count names in metadata_names
+counts_ind <- sapply(counts_names, function(x) {
+  metadata_names[str_detect(pattern = x, string = metadata_names)]
+})
+counts_ind <- counts_ind[lengths(counts_ind) > 0]
+
+# Create a data frame with matched filenames and count names
+counts_ind_df <- data.frame(
+  ribo_filenames = as.character(counts_ind), 
+  ribo_counts_names = names(counts_ind)
+)
+
+# Make order of counts_ind match metadata table
+counts_ind_df <- counts_ind_df[match(metadata_names, counts_ind_df$ribo_filenames), ]
+
+# Select only columns from the counts file that match cell line metadata
+ribo_counts_tissues <- ribo_counts[, counts_ind_df$ribo_counts_names]
+
+# Set colnames of rna_counts to match metadata sample IDs
+colnames(ribo_counts_tissues) <- sample_metadata_complete$Sample_ID
+```
+
+## Load gene lengths
+
+```{r}
+# Load gene lengths data
+gene_lengths <- read.table(
+  "/rnaseq_for_te/data/processed/featureCounts/Medullo_RNA_GRCh38.102.geneCountsCDS.txt",
+  check.names = F, 
+  header = T, 
+  row.names = 1) 
+
+lengths_kb <- gene_lengths$Length / 1000
+# all(rownames(gene_lengths) == rownames(ribo_counts))  # TRUE
+
+```
+
+
+# Analysis
+
+## Calculate TE values
+
+```{r}
+# Make sure all rownames match up
+all(rownames(ribo_counts_tissues) == rownames(gene_lengths))
+all(rownames(ribo_counts_tissues) == rownames(rna_counts_tissues))
+```
+
+```{r}
+# Remove genes with fewer than 128 avg reads in ribo and RNAseq data
+ribo_counts_filtered <- ribo_counts_tissues[which(rowMeans(ribo_counts_tissues) > 128), ]
+rna_counts_filtered <- rna_counts_tissues[which(rowMeans(rna_counts_tissues) >128), ]
+
+rna_ribo_intsct <- intersect(rownames(ribo_counts_filtered), rownames(rna_counts_filtered))
+ribo_counts_filtered <- ribo_counts_filtered[rna_ribo_intsct, ]
+rna_counts_filtered <- rna_counts_filtered[rna_ribo_intsct, ]
+```
+
+```{r}
+# Calculate ribo TPM
+ribo_counts_ind <- match(rownames(ribo_counts_filtered), rownames(gene_lengths))
+ribo_counts_filtered <- ribo_counts_filtered[order(ribo_counts_ind), ]
+rpk_ribo <- ribo_counts_filtered / lengths_kb
+pm_scalingfactors_ribo <- colSums(rpk_ribo)/1000000
+tpm_ribo_tissues <- t(t(rpk_ribo) / pm_scalingfactors_ribo)
+
+# Calculate RNA TPM
+rna_counts_ind <- match(rownames(rna_counts_filtered), rownames(gene_lengths))
+rna_counts_filtered <- rna_counts_filtered[order(rna_counts_ind), ]
+rpk_rna <- rna_counts_filtered / lengths_kb
+pm_scalingfactors_rna <- colSums(rpk_rna)/1000000
+tpm_rna_tissues <- t(t(rpk_rna) / pm_scalingfactors_rna)
+```
+
+```{r}
+# Write ribo counts and RNA TPMs to file (tissues only, not included in manuscript)
+# write.csv(tpm_ribo_tissues, "/translational_efficiency/results/tables/ribo_TPM_CDSs_tissues.csv")
+# write.csv(tpm_rna_tissues, "/translational_efficiency/results/tables/rna_TPM_CDSs_tissues.csv")
+```
+
+```{r}
+# Calculate TE values
+te <- tpm_ribo_tissues / tpm_rna_tissues
+te_mat <- as.matrix(te)
+
+# Write raw TE values to file (tissues only, not included in manuscript)
+# write.csv(te_mat, "/translational_efficiency/results/tables/raw_te_matrix_tissues.csv")
+
+# Replace non-real values
+te_mat[is.infinite(te_mat)] <- NA  # Replace Inf in vector by NA
+te_mat[is.na(te_mat)] <- 0  # Replace non-real values with 0
+```
+
+```{r}
+# Log transform TE values
+te_log2 <- log2(te_mat + 0.01)
+te_log2_mat <- as.matrix(te_log2)
+
+# Scale log2-transformed TE values
+te_mat_scale <- te_log2_mat - rowMedians(te_log2_mat)
+```
+
+### Test normality
+
+```{r}
+# Step 1: Transpose the matrix so that samples are rows and genes are columns
+transposed_matrix <- t(te_mat)
+
+# Step 2: Create an empty vector to store the test results
+normality_test_results <- vector("list", nrow(transposed_matrix))
+
+# Step 3: Loop through each row (sample) and perform the Shapiro-Wilk test
+for (i in 1:nrow(transposed_matrix)) {
+  sample_data <- transposed_matrix[i, ]
+  if (length(sample_data) >= 3 & length(sample_data) <= 5000) {
+    normality_test_results[[i]] <- shapiro.test(sample_data)
+  } else {
+    cat("Sample", i, "has an insufficient number of elements or too many elements for the Shapiro-Wilk test.\n")
+  }
+}
+
+# Step 4: Print the test results for valid samples
+for (i in 1:nrow(transposed_matrix)) {
+  if (!is.null(normality_test_results[[i]])) {
+    cat("Sample", i, "p-value:", normality_test_results[[i]]$p.value, "\n")
+  }
+}
+
+```
+
+
+
+### For all tissues samples (excluding bad ones), by subgroup (Figure S1M)
+
+```{r}
+# Calculate median TE values for specified subgroups
+baseMeanPerLvl <- sapply(levels(sample_metadata_complete$G3G4_v_rest), 
+                         function(lvl) {
+                           subset <- te_mat_scale[,sample_metadata_complete[sample_metadata_complete$G3G4_v_rest == lvl,]$Sample_ID]
+                           if (is.matrix(subset) || is.data.frame(subset)) {
+                             return(rowMeans(subset))
+                           } else {
+                             return(subset)
+                           }
+                         })
+
+baseMeanPerLvl <- as.data.frame(baseMeanPerLvl, check.names = F) %>%
+  rownames_to_column("gene_id") %>%
+  pivot_longer(!gene_id, values_to = "TE")
+
+ggplot(data = baseMeanPerLvl, aes(x = TE)) +
+    scale_fill_brewer(palette = "Set1") +
+
+  # geom_histogram(aes(x = TE, fill = name), binwidth = 0.1) +
+  
+  geom_density(aes(x = TE, fill = name), color = "black") +
+  # geom_boxploth(aes(x = TE, fill = name, y = -0.05), ) +
+  geom_boxplot(aes(x = TE, fill = name, y = 1), 
+               position = ggstance::position_dodgev(height = 100),
+               width = .5, show.legend = FALSE) +
+  facet_grid(name ~ .) +
+  
+  scale_x_continuous(limits = c(-4, 4)) +
+  labs(x = "log2(riboseq/RNAseq)", fill = "MYC status", y = NULL) +
+  geom_vline(xintercept = log2(1), lty = 2) + theme_classic()
+
+# ggsave(filename = "/translational_efficiency/results/plots/TE_dist_tissues_subgroups.pdf", width = unit(5, "cm"), height = unit(3, "cm"))
+```
+
+```{r, fig.height = 10, fig.width = 4}
+# Calculate TE values for each sample
+# te_mat_use <- te_mat_scale
+te_mat_use <- te_mat_scale
+# te_mat_use <- t(scale(t(te_log2_mat)))
+
+tePerSample <- sapply(colnames(te_mat_use), 
+                      function(sample) {
+                        return(te_mat_use[,sample])
+                      })
+
+tePerSample <- as.data.frame(tePerSample, check.names = F) %>%
+  rownames_to_column("gene_id") %>%
+  pivot_longer(!gene_id, values_to = "TE", names_to = "Sample_ID")
+
+# Create a new column to indicate whether each sample is "Tissue_14" or not
+tePerSample$Highlight <- ifelse(tePerSample$Sample_ID == "Tissue_14", "Tissue_14", "Other")
+
+# Plot the distribution of TE values per sample
+ggplot(data = tePerSample, aes(x = TE, fill = Highlight)) +
+  geom_density(color = "black") +
+  geom_boxplot(aes(x = TE, fill = Highlight, y = 1), 
+               position = ggstance::position_dodgev(height = 50),
+               width = .5, show.legend = FALSE) +
+  facet_grid(Sample_ID ~ .) +
+  scale_x_continuous(limits = c(-2.5, 6)) +
+  labs(x = "log2(riboseq/RNAseq)", fill = "Sample", y = NULL) +
+  geom_vline(xintercept = log2(1), lty = 2) + theme_classic()
+
+```
+
+
+```{r}
+t.test(TE ~ name, baseMeanPerLvl, exact = T)
+
+wilcox.test(TE ~ name, baseMeanPerLvl, exact = T)
+```
+
+```{r}
+# Select the ntop genes by variance
+ntop <- 500
+rv <- rowVars(te_mat_scale)
+select <- order(rv, decreasing = TRUE)[seq_len(min(ntop, length(rv)))]
+
+# Perform a PCA on the selected genes
+pca <- prcomp(t(te_mat_scale[select,]))
+
+# Calculate contribution to the total variance for each component
+percentVar <- pca$sdev^2 / sum(pca$sdev^2)
+
+# Create data frame with principal components and class
+df <- data.frame(
+  Sample_ID = rownames(pca$x),
+  pc1 = pca$x[,1], 
+  pc2 = pca$x[,2],
+  class = ifelse(rownames(pca$x) %in% subset(sample_metadata_complete, G3G4_v_rest == "G3/4")$Sample_ID, 
+                 "G3/G4", 
+                 ifelse(rownames(pca$x) %in% subset(sample_metadata_complete, G3G4_v_rest == "SHH")$Sample_ID, "SHH", "NOS"))
+)
+
+# Create PCA plot
+plt <- ggplot(df, aes(x = pc1, y = pc2, color = class, label = Sample_ID)) +
+  geom_point(size = 2) +
+  scale_color_brewer(palette = "Set1") +
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(), 
+        axis.line = element_line(colour = "black"))+ 
+  theme(aspect.ratio=1, plot.title = element_text(hjust = 0.5)) +
+  xlab(paste0("PC1: ", round(percentVar[1] * 100), "% variance")) +
+  ylab(paste0("PC2: ", round(percentVar[2] * 100), "% variance")) +
+  coord_fixed() +
+  labs(color = "MYC level", title = "TPM Riboseq / TPM RNA-seq") 
+
+plt_fixed <- egg::set_panel_size(plt, width  = unit(4, "cm"), height = unit(4, "cm"))
+plt
+
+# ggsave("plots/TE_PCA_subgroups.pdf")
+
+
+```
+
+```{r}
+# Select the ntop genes by variance
+ntop <- 500
+rv <- rowVars(te_mat_scale)
+select <- order(rv, decreasing = TRUE)[seq_len(min(ntop, length(rv)))]
+
+# Perform a PCA on the selected genes
+pca <- prcomp(t(te_mat_scale[select,]))
+
+# Calculate contribution to the total variance for each component
+percentVar <- pca$sdev^2 / sum(pca$sdev^2)
+
+# Create data frame with principal components and class
+df <- data.frame(
+  Sample_ID = rownames(pca$x),
+  pc1 = pca$x[,1], 
+  pc2 = pca$x[,2],
+  class = ifelse(rownames(pca$x) %in% subset(sample_metadata_complete, G3G4_v_rest == "G3/4")$Sample_ID, 
+                 "G3/G4", 
+                 ifelse(rownames(pca$x) %in% subset(sample_metadata_complete, G3G4_v_rest == "SHH")$Sample_ID, "SHH", "NOS"))
+)
+
+# Create PCA plot
+plt <- ggplot(df, aes(x = pc1, y = pc2, color = class, label = Sample_ID)) +
+  geom_point(size = 2) +
+  ggrepel::geom_text_repel() +
+  scale_color_brewer(palette = "Set1") +
+  theme_classic() +
+  theme(aspect.ratio = 1, plot.title = element_text(hjust = 0.5)) +
+  xlab(paste0("PC1: ", round(percentVar[1] * 100), "% variance")) +
+  ylab(paste0("PC2: ", round(percentVar[2] * 100), "% variance")) +
+  coord_fixed() +
+  labs(color = "MYC level", title = "TPM Riboseq / TPM RNA-seq") 
+
+plt_fixed <- egg::set_panel_size(plt, width  = unit(4, "cm"), height = unit(4, "cm"))
+plt
+```

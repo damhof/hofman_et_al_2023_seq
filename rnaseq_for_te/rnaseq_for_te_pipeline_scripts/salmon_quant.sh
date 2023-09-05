@@ -8,6 +8,8 @@ set -uo pipefail
 module load salmon/1.8.0
 
 # Load files
+mapfile -t sample_ids < sample_ids.txt
+
 sample_id="${sample_ids[$((SLURM_ARRAY_TASK_ID-1))]}"
 r1_filtered="${outdir}/bowtie2/${sample_id}/${sample_id}_filtered.fastq.gz"
 index="${outdir}/salmon_index/MANE_GENCODE_ORFEOME_CDS/"

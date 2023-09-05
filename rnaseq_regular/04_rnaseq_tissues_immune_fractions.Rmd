@@ -1,0 +1,185 @@
+---
+title: "Medulloblastoma tissues RNAseq tumor immune cells deconvolution"
+output: html_notebook
+---
+
+# Introduction
+
+This notebook presents an analysis of RNA sequencing data from Medulloblastoma tissues to perform tumor immune cell deconvolution. The analysis involves loading the necessary libraries, processing metadata and count data, mapping Ensembl IDs to HGNC symbol IDs, and performing immune cell deconvolution using the `immunedeconv` package.
+
+Inputs: 
+- Full length canonical RNA-seq reads (Table S1B)
+- Sample metadata (Table S1A)
+
+Outputs:
+- Figure S1I
+
+# 1. Setup and Libraries
+
+First, we load the required libraries for the analysis: `immunedeconv`, `tidyverse`, `AnnotationDbi`, and `org.Hs.eg.db`.
+
+```{r setup, include = FALSE}
+library(immunedeconv)
+library(tidyverse)
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+```
+
+# 2. Load Feature Counts Data
+
+We begin by loading the feature counts table containing the RNA sequencing data from Medulloblastoma tissues.
+
+```{r}
+# Load RNAseq counts table (Table S1B)
+canonical_RNA_counts_all <- read.table("/rnaseq_regular/data/processed/featurecounts/medullo_allsamples.counts", check.names = F)
+```
+
+# 3. Process Metadata
+
+Next, we load and process the metadata table associated with the RNA sequencing data.
+
+```{r}
+sample_metadata <- readxl::read_xlsx("Table_S1.xlsx", sheet = 1, col_names = T, skip = 2, .name_repair = "universal")
+
+# Filter samples with both RNAseq and riboseq data
+sample_metadata_complete <- sample_metadata %>%
+  filter(!is.na(RNASeq_file_names) & 
+           !is.na(RiboSeq_file_names..final.))
+
+# Extract RNA sample names based on filenames
+sample_metadata_complete <- sample_metadata_complete %>%
+  mutate(rna_name = gsub("_R1.*", "", gsub(";.*", "", RNASeq_file_names)))
+
+# Select metadata for tissue samples and convert factors
+sample_metadata_tissues <- sample_metadata_complete %>%
+  filter(Sample_Type != "Cell line") %>%
+  mutate(MYC.group = as.factor(MYC.group),
+         Molecular.subgroup = case_when(
+           Molecular.subgroup == "Group 4" ~ "G4",
+           Molecular.subgroup == "Group 3" ~ "G3",
+           TRUE ~ Molecular.subgroup
+         ))
+
+# Set rownames to Sample_ID for easy indexing
+rownames(sample_metadata_tissues) <- sample_metadata_tissues$Sample_ID
+```
+
+# 4. Data Preprocessing
+
+In this section, we perform data preprocessing steps such as fixing sample column names, extracting length information, filtering and matching counts data, and calculating TPM values.
+
+```{r}
+# Fix sample column names by removing unnecessary parts
+colnames(canonical_RNA_counts_all) <- basename(colnames(canonical_RNA_counts_all)) %>%
+  gsub(".Aligned.sortedByCoord.out.bam", "", .)
+
+# Extract length information
+lengths <- canonical_RNA_counts_all$Length
+
+# Extract counts data
+counts <- canonical_RNA_counts_all[, 6:ncol(canonical_RNA_counts_all)]
+
+# Match the column names of counts with the RNASeq_file_names in sample_metadata_tissues
+match_counts <- unique(str_extract(sample_metadata_tissues$RNASeq_file_names, str_c(colnames(counts), collapse = "|")))
+counts <- counts[, match_counts]
+
+# Find matching metadata based on the matched column names
+metadata_matches <- grep(paste(match_counts, collapse = "|"), sample_metadata_tissues$RNASeq_file_names)
+sample_metadata_tissues <- sample_metadata_tissues[metadata_matches, ]
+colnames(counts) <- sample_metadata_tissues$Sample_ID
+
+# Calculate RPK (Reads Per Kilobase)
+rpk <- sweep(counts, 2, lengths / 1000, "/")
+
+# Calculate the sum of RPK values for each sample (library size)
+lib_sizes <- colSums(rpk)
+
+# Divide each RPK value by the library size (in millions) to get TPM
+tpm <- sweep(rpk, 2, lib_sizes / 10^6, "/")
+```
+
+# 5. Map Ensembl IDs to HGNC Symbol IDs
+
+In this step, we map Ensembl IDs to HGNC symbol IDs using the `org.Hs.eg.db` package. We handle duplicates and remove rows with missing symbols.
+
+```{r}
+# Map Ensembl IDs to HGNC symbol IDs
+symbols <- mapIds(org.Hs.eg.db, keys = rownames(tpm), column = "SYMBOL", keytype = "ENSEMBL", multiVals = "first")
+
+# Create a logical vector indicating rows with missing symbols
+nas <- is.na(symbols)
+
+# Remove rows with missing symbols from the 'tpm' dataframe
+tpm <- tpm[!nas, ]
+
+# Replace row names with unique HGNC symbol IDs
+symbols_unique <- symbols[!nas]
+
+# Handle duplicates by adding a suffix
+dupes <- duplicated(symbols_unique)
+symbols_unique[dupes] <- paste(symbols_unique[dupes], "_dup", seq(sum(dupes)), sep = "")
+
+rownames(tpm) <- symbols_unique
+```
+
+# 6. Perform Tumor Immune Cell Deconvolution
+
+Using the processed TPM values, we perform tumor immune cell deconvolution using the `immunedeconv` package and the "quantiseq" method.
+
+```{r}
+deconv <- immunedeconv::deconvolute(tpm, method = "quantiseq", tumor = TRUE)
+```
+
+# 7. Visualization
+
+## 7.1. Plotting Cell Fractions
+
+To visualize the cell fractions in each sample, we reshape the deconvolution results to long format and create a stacked bar plot.
+
+```{r}
+# Reshape the data to long format for plotting
+deconv_long <- deconv %>%
+  gather(sample, fraction, -cell_type)
+
+# Create a new variable 'sample_ordered' that is ordered by the fraction of "uncharacterized cell"
+deconv_long <- deconv_long %>%
+  mutate(sample_ordered = forcats::fct_reorder(sample, fraction * (cell_type == "uncharacterized cell"), .fun = sum))
+
+# Create the plot
+ggplot(deconv_long, aes(x = sample_ordered, y = fraction, fill = cell_type)) +
+  geom_bar(stat = "identity") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) +
+  labs(x = "Sample", y = "Fraction", fill = "Cell Type") +
+  guides(fill = guide_legend(reverse = TRUE))  +
+  coord_flip() +
+  scale_fill_brewer(palette = "Paired") +
+  scale_x_discrete(limits = rev(levels(deconv_long)))
+
+# ggsave("/rnaseq_regular/results/plots/RNAseq_immune_infiltration_tissues.pdf")
+```
+
+## 7.2. Hierarchical Clustering and Dendrogram
+
+To explore the relationships between samples based on the deconvolution results, we compute a distance matrix and
+
+ perform hierarchical clustering. We then plot the resulting dendrogram.
+
+```{r}
+# Transpose the deconvolution results
+deconv_transposed <- t(deconv[, -1])
+
+# Compute the distance matrix
+dist_matrix <- dist(deconv_transposed, method = "euclidean")
+
+# Perform hierarchical clustering
+hc <- hclust(dist_matrix, method = "complete")
+
+
+# pdf(file = "/rnaseq_regular/results/plots/RNAseq_immune_infiltration_tissues_clustering.pdf")
+# Plot the dendrogram
+plot(hc, labels = hc$labels)
+abline(h = cutree(hc, k = 3), col = "red")
+# dev.off()
+
+```

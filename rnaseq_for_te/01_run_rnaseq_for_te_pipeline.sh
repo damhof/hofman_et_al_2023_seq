@@ -96,6 +96,10 @@ check_annotation ${reference_gtf} ${custom_gtf}
 echo "$(date '+%Y-%m-%d %H:%M:%S') Finding samples..."
 get_samples $project_data_folder $data_folder $paired_end
 
+printf "%s\n" "${r1_files[@]}" > r1_files.txt
+printf "%s\n" "${sample_ids[@]}" > sample_ids.txt
+printf "%s\n" "${samples[@]}" > samples.txt
+
 # Create output directories
 mkdir -p log
 mkdir -p ${outdir}

@@ -1,0 +1,143 @@
+---
+title: "Medulloblastoma tissues RNAseq canonical CDS clustering"
+output: html_notebook
+---
+
+# Introduction
+
+This notebook focuses on the analysis of RNA sequencing data from Medulloblastoma tissue samples. The goal is to identify differentially expressed genes and perform clustering based on MYC expression levels. The notebook involves loading necessary libraries, data preprocessing, running DESeq2 analysis, PCA visualization, identifying cluster-defining genes, and creating heatmaps.
+
+Inputs: 
+- Gene-level Ribo-seq read counts of annotated CDSs (Table S1E)
+- Sample metadata (Table S1A)
+
+Outputs:
+- Figure S1L
+
+
+# 1. Setup and Libraries
+
+First, we load the required libraries for the analysis: stringr, tidyverse, DESeq2, RColorBrewer, fgsea, msigdb, ExperimentHub, GSEABase, org.Hs.eg.db, AnnotationDbi, and egg.
+
+```{r setup, include = FALSE}
+library(stringr)
+library(tidyverse)
+library(DESeq2)
+library(RColorBrewer)
+library(fgsea)
+library(msigdb)
+library(ExperimentHub)
+library(GSEABase)
+library(org.Hs.eg.db)
+library(AnnotationDbi)
+library(egg)
+```
+
+# 2. Load and Pre-process Data
+
+We load the RNAseq counts table and fix sample column names. We also remove unnecessary metadata columns and write the processed data to a CSV file for further analysis.
+
+```{r}
+# Load RNAseq counts table
+canonical_ribo_counts_all <- read.csv2("/riboseq/results/tables/S1_riboseq_canonical_counts.csv")
+```
+
+# 3. Load and process metadata
+
+We load the metadata table associated with the RNA sequencing data. We filter samples with both RNAseq and riboseq data and select metadata for tissue samples. We also convert specific columns to factors and set rownames for easy indexing.
+
+```{r}
+# Load metadata
+ribo_metadata <- readxl::read_xlsx("Table_S1.xlsx", sheet = 1, col_names = T, skip = 2, .name_repair = "universal")
+
+# Filter samples with both RNAseq and riboseq data
+ribo_metadata_complete <- ribo_metadata[which(
+  !is.na(ribo_metadata$RNASeq_file_names) &
+    !is.na(ribo_metadata$RiboSeq_file_names..final.)), ]
+
+# Extract RNA sample names based on filenames
+ribo_metadata_complete <- ribo_metadata_complete %>%
+  mutate(rna_name = gsub("_R1.*", "", gsub(";.*", "", .$RNASeq_file_names)))
+
+# Select metadata for cell line samples
+ribo_metadata_tissues <- subset(ribo_metadata_complete, Sample_Type != "Cell line")
+ribo_metadata_tissues$MYC.group <- as.factor(ribo_metadata_tissues$MYC.group)
+
+ribo_metadata_tissues[which(ribo_metadata_tissues$Molecular.subgroup == "Group 4"), ]$Molecular.subgroup = "G4" 
+ribo_metadata_tissues[which(ribo_metadata_tissues$Molecular.subgroup == "Group 3"), ]$Molecular.subgroup = "G3" 
+
+ribo_metadata_tissues$Molecular.subgroup <- as.factor(ribo_metadata_tissues$Molecular.subgroup)
+
+rownames(ribo_metadata_tissues) <- ribo_metadata_tissues$Sample_ID
+```
+
+```{r}
+# Exclude samples
+
+# Tissue 10 is degraded; Tissue 12, Tissue 1, and Tissue 2 high immune infiltration. Exclude all autopsies because they are also of low quality. Remove tissue 6 because it is NOS.
+
+ribo_metadata_tissues <- ribo_metadata_tissues %>%
+  filter(!Sample_ID %in% c("Tissue_10", "Tissue_1", "Tissue_2", "Tissue_12")) %>%
+  filter(!grepl("Autopsy", Sample_ID))
+
+```
+
+# 4. Match RNA-seq counts and metadata
+
+```{r}
+# Match RNA-seq counts columns to metadata rows
+match_counts <- unique(str_extract(ribo_metadata_tissues$RiboSeq_file_names..final., str_c(colnames(canonical_ribo_counts_all), collapse = "|")))
+canonical_ribo_counts <- canonical_ribo_counts_all[, match_counts]
+
+# Find matching metadata
+metadata_matches <- grep(paste(match_counts, collapse = "|"), ribo_metadata_tissues$RiboSeq_file_names..final.)
+ribo_metadata_tissues <- ribo_metadata_tissues[metadata_matches, ]
+colnames(canonical_ribo_counts) <- ribo_metadata_tissues$Sample_ID
+```
+
+# 5. Run DESeq2 to select top and bottom MYC expressing samples
+```{r}
+# Run DESeq2
+dds <- DESeqDataSetFromMatrix(countData = canonical_ribo_counts, colData = ribo_metadata_tissues, design = ~ G3G4_v_rest)
+dds <- DESeq(dds)
+vsd <- vst(dds, blind = F)
+mat_vsd <- assay(vsd, blind = FALSE)
+mat_dds <- counts(dds, normalized = T)
+
+# Get DESeq2 results
+resultsNames(dds)
+res <- results(dds)
+```
+
+
+# 6. PCA visualization
+
+
+```{r}
+# Perform PCA and prepare data for plotting
+pcaData <- plotPCA(vsd, intgroup=c("G3G4_v_rest"), returnData=TRUE)
+pcaData$Sample_ID <- pcaData$name
+
+# Define colors for PCA plots
+col = colorRampPalette(rev(brewer.pal(n = 7, name = "RdYlBu")))(27)
+
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+```
+
+## 6.1. PCA Plot based on MYC expression levels
+
+```{r}
+plt <- ggplot(pcaData, aes(PC1, PC2, color=G3G4_v_rest)) +
+  scale_color_brewer(palette = "Set1") +
+  geom_point(size=2) +
+  ggrepel::geom_text_repel(aes(label = pcaData$name), vjust = 1, hjust = 1) +  # This line adds the labels
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variance")) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+                                                           panel.background = element_blank(), axis.line = element_line(colour = "black"))+   
+  theme(aspect.ratio=1, plot.title = element_text(hjust = 0.5))
+  # labs(color = "Subgroup", title = "RNA-seq")
+
+plt
+
+ggsave("/riboseq/results/plots/Ribo_PCA_tissues_subgroups.pdf")
+```

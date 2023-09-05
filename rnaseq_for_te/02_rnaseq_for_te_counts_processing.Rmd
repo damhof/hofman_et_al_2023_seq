@@ -1,7 +1,9 @@
 ---
-title: "RNAseq counts processing (RNAseq for TE pipeline)"
+title: "RNAseq counts processing for gene-level translational efficiency analysis"
 output: html_notebook
 ---
+
+This notebook describes the steps taken to process the gene-level RNA-seq counts for canonical CDS regions in the Hofman et al. paper (Table S1C). These counts were used for gene-level translational efficiency analyses of canonical genes (Figures 1G and 1H).
 
 ```{r setup, include = FALSE}
 library(DESeq2)

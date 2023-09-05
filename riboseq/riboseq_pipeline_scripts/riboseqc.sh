@@ -7,7 +7,9 @@ set -uo pipefail
 # Load correct modules
 module load R/${r_version}
 
-# Get correct files
+# Load files
+mapfile -t sample_ids < sample_ids.txt
+
 sample_id="${sample_ids[$((SLURM_ARRAY_TASK_ID-1))]}"
 bam_file="${outdir}/star_tx/${sample_id}/${sample_id}.Aligned.sortedByCoord.out.bam" \
 

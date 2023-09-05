@@ -6,10 +6,10 @@ output: html_notebook
 # Description
 This R Notebook is used to analyze differentially translated open reading frames (ORFs) in MYC high and MYC low cell lines. The analysis includes loading metadata, filtering samples, running DESeq2, creating volcano plots, and generating PCA plots.
 
-## Input files:
-1. Metadata file: 01.26.2023_Table_S1.xlsx
-2. ORF reference table: all_ORFs_ref_table.csv
-3. Riboseq P-sites counts: S1_riboseq_P_sites_counts.csv (generated with 03_riboseq_p_sites_quantification.Rmd)
+Inputs:
+- Metadata file: 01.26.2023_Table_S1.xlsx
+- ORF reference table: all_ORFs_ref_table.csv (Based on Table S1)
+- Riboseq P-sites counts: S1_riboseq_P_sites_counts.csv (Table S1K)
 
 ## Output files:
 1. ORF level differential translation analysis results: ORF_level_diff_transl_analysis_results.csv
@@ -23,6 +23,7 @@ suppressPackageStartupMessages({
   library(DESeq2)
   library(ggrepel)
   library(EnhancedVolcano)
+  library(ggbeeswarm)
 })
 ```
 
@@ -81,9 +82,9 @@ colnames(coldata_select) <- gsub("-", "_", colnames(coldata_select))
 ```
 
 
-# Differential translation analysis (Table S1K)
+# Differential translation analysis (Table S1O)
 
-```{r, eval = FALSE}
+```{r}
 # Run DESeq2 to analyze differential translation
 dds <- DESeqDataSetFromMatrix(countData = counts_psites_ordered,
                               colData = sample_metadata_matched,
@@ -202,7 +203,9 @@ ggplot(pcaData, aes(PC1, PC2, color=MYC.group)) +
   labs(color = "MYC level", title = "P-site counts (cell lines)")
 ```
 
-# Visualization: ASNSD1-uORF normalized counts plot (Fig 4A)
+# Visualization: plot ORF couns
+
+## ASNSD1-uORF normalized counts plot (Fig 4A)
 
 ```{r ASDURF-counts}
 # Create a dotplot of normalized ASNSD1-uORF P site counts in MYC high and MYC low samples
@@ -219,8 +222,437 @@ ASDURF_plt
 
 # Save the plot
 ggsave(plot = ASDURF_plt,
-       filename = "S4A_ASDURF_Riboseq.pdf", device = "pdf", path = , width = unit(6, "cm"), height = unit(6, "cm"))
+       filename = "4A_ASDURF_Riboseq.pdf", device = "pdf", path = , width = unit(6, "cm"), height = unit(6, "cm"))
 
 ```
 
-# End of the R Notebook
+## Other ORFs
+
+```{r}
+plot_ORF_counts <- function(dds, ref_table, gene_string) {
+  # Get a vector of all ORF IDs that belong to the gene of interest
+  orf_ids <- ref_table$orf_id[grepl(gene_string, ref_table$gene_name)]
+
+  # Initialize an empty list to store the plots
+  plot_list <- list()
+
+  # Loop over all ORF IDs and generate a plot for each
+  for (orf_id in orf_ids) {
+    # Get gene_name and biotype for the current ORF
+    gene_name <- ref_table$gene_name[ref_table$orf_id == orf_id]
+    biotype <- ref_table$biotype[ref_table$orf_id == orf_id]
+    
+    # Generate plot
+    cts <- plotCounts(dds = dds, gene = orf_id, intgroup = "MYC.group", returnData = T, normalized = T)
+    
+    plt <- ggplot(data = cts, aes(y = count, x = MYC.group, color = MYC.group)) +
+      scale_color_brewer(palette = "Set1") +
+      labs(title = paste0(c(gene_name, "_", biotype, " P-site counts"), collapse = ""), 
+           subtitle = paste0("ORF ID: ", orf_id),
+           x = NULL, y = "P-site counts") +
+      geom_beeswarm() +
+      theme_classic() +
+      ggpubr::stat_compare_means(comparisons = list(c("MYC high", "MYC low")), label = "p.format", ref.group = "MYC low", label.y = max(cts$count)* 1.1)
+    
+    # Add plot to the list
+    plot_list[[orf_id]] <- plt
+  }
+
+  return(plot_list)
+}
+
+```
+
+### TPT1-AS1_lncRNA
+
+```{r}
+# pdf("/riboseq/results/plots/TPT1_AS1.pdf")
+plot_ORF_counts(dds, ref_table, "TPT1-AS1")
+# dev.off()
+```
+
+
+### ZNF525_lncRNA
+
+```{r}
+plot_ORF_counts(dds, ref_table, "ZNF525")
+```
+
+
+### LOC101927027_lncRNA
+Also known as CHROMR
+
+```{r}
+# pdf("riboseq/results/plots/CHROMR.pdf")
+plot_ORF_counts(dds, ref_table, "CHROMR")
+# dev.off()
+```
+
+### PAX8-AS1_lncRNA
+
+```{r}
+plot_ORF_counts(dds, ref_table, "PAX8-AS1")
+```
+
+### RP1-261D10.2.1_lncRNA 
+Previously known asAC005476.2, which is how it was annotated in ref_table. Now known as SIPA1L1-AS1.
+
+```{r}
+plot_ORF_counts(dds, ref_table, "AC005476.2")
+```
+
+### G049876_lncRNA -> what is this?
+
+
+### LINC01399_lncRNA
+Not in data
+
+### LINC00888_lncRNA
+```{r, fig.width=4, fig.height=4}
+# pdf("riboseq/results/plots/LINC00888.pdf")
+plot_ORF_counts(dds, ref_table, "LINC00888")
+# dev.off()
+```
+
+### LOC401320.1_lncRNA
+Now known as GARS1-DT
+
+```{r}
+plot_ORF_counts(dds, ref_table, "GARS1-DT")
+```
+
+
+### RP11-262H14.3_lncRNA
+Now known as LERFS
+
+```{r}
+plot_ORF_counts(dds, ref_table, "LERFS")
+```
+### PFD(L) complex members
+```{r}
+plot_ORF_counts(dds, ref_table, "PDRG1")
+```
+
+```{r}
+plot_ORF_counts(dds, ref_table, "UXT")
+```
+```{r}
+plot_ORF_counts(dds, ref_table, "URI1")
+```
+
+```{r}
+plot_ORF_counts(dds, ref_table, "PFDN4")
+```
+```{r}
+plot_ORF_counts(dds, ref_table, "PFDN2")
+```
+```{r}
+plot_ORF_counts(dds, ref_table, "PFDN6")
+```
+
+```{r}
+plot_ORF_counts(dds, ref_table, "ASDURF")
+```
+```{r}
+plot_ORF_counts(dds, ref_table, "ASNSD1")
+```
+
+```{r}
+plot_ORF_counts(dds, ref_table, "PFDN5")
+```
+
+```{r}
+plot_ORF_counts(dds, ref_table, "VBP1")
+```
+
+```{r}
+plot_ORF_counts <- function(dds, ref_table, genes) {
+  # Initialize a data frame to collect results
+  results_df <- data.frame()
+
+  # Get the results table from the DESeq object
+  deseq_results <- results(dds)
+
+  # Loop over all genes
+  for (gene_string in genes) {
+    # Get a vector of all ORF IDs that belong to the gene of interest
+    orf_ids <- ref_table$orf_id[grepl(gene_string, ref_table$gene_name)]
+
+    # Temporary data frame to store results for this gene
+    gene_results <- data.frame()
+
+    # Loop over all ORF IDs and gather results
+    for (orf_id in orf_ids) {
+      # Get gene_name and biotype for the current ORF
+      gene_name <- ref_table$gene_name[ref_table$orf_id == orf_id]
+      biotype <- ref_table$biotype[ref_table$orf_id == orf_id]
+    
+      # Generate plot
+      cts <- plotCounts(dds = dds, gene = orf_id, intgroup = "MYC.group", returnData = T, normalized = T)
+    
+      # Get P value from the DESeq results table
+      p_value <- deseq_results[orf_id, "padj"]
+
+      # Create a temporary data frame to store the results
+      temp_df <- data.frame(gene_name = gene_name,
+                            orf_id = orf_id,
+                            MYC_high = mean(cts$count[cts$MYC.group == "MYC high"]),
+                            MYC_low = mean(cts$count[cts$MYC.group == "MYC low"]),
+                            p_value = p_value)
+    
+      # Append to gene_results
+      gene_results <- rbind(gene_results, temp_df)
+    }
+
+    # For this gene, keep only the row with the lowest p_value
+    gene_results <- gene_results[which.min(gene_results$p_value),]
+
+    # Append to overall results
+    results_df <- rbind(results_df, gene_results)
+  }
+
+  # Return the results
+  return(results_df)
+}
+
+# List of genes to analyze
+genes_to_analyze <- c("TPT1-AS1", "ZNF525", "CHROMR", "PAX8-AS1", "AC005476.2", "LINC00888", "GARS1-DT", "LERFS")
+
+# Call the function with the list of genes
+all_results <- plot_ORF_counts(dds, ref_table, genes_to_analyze)
+
+# Order by P value
+all_results <- all_results[order(all_results$p_value),]
+
+
+# Plot the combined bar plot
+ggplot(all_results, aes(x = reorder(gene_name, p_value), y = MYC_high)) +
+  geom_bar(stat = "identity") +
+  geom_bar(aes(y = MYC_low), stat = "identity", fill = "red") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(x = "Gene Name", y = "P-site counts", title = "Comparison of MYC High vs MYC Low")
+
+```
+```{r}
+library(tidyverse)
+
+# Reshape the data into a longer format
+all_results_long <- all_results %>%
+  gather(key = "condition", value = "count", MYC_high, MYC_low)
+
+# Plot the combined bar plot with bars side by side
+ggplot(all_results_long, aes(x = reorder(gene_name, p_value), y = count, fill = condition)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(x = "Gene Name", y = "P-site counts", title = "Comparison of MYC High vs MYC Low") +
+  scale_fill_brewer(palette = "Set1")
+
+```
+
+
+
+
+```{r}
+plot_ORF_counts <- function(dds, ref_table, genes) {
+  # Initialize a data frame to collect results
+  results_df <- data.frame()
+
+  # Get the results table from the DESeq object
+  deseq_results <- results(dds)
+
+  # Loop over all genes
+  for (gene_string in genes) {
+    # Get a vector of all ORF IDs that belong to the gene of interest
+    orf_ids <- ref_table$orf_id[grepl(gene_string, ref_table$gene_name)]
+    
+    # Temporary data frame to store results for this gene
+    gene_results <- data.frame()
+
+    # Loop over all ORF IDs and gather results
+    for (orf_id in orf_ids) {
+      # Get gene_name for the current ORF
+      gene_name <- ref_table$gene_name[ref_table$orf_id == orf_id]
+      
+      # Get P value from the DESeq results table
+      p_value <- deseq_results[orf_id, "padj"]
+
+      # Get the counts
+      cts <- plotCounts(dds = dds, gene = orf_id, intgroup = "MYC.group", returnData = T, normalized = T)
+      MYC_high = mean(cts$count[cts$MYC.group == "MYC high"])
+      MYC_low = mean(cts$count[cts$MYC.group == "MYC low"])
+      
+      # Create a temporary data frame to store the results
+      temp_df <- data.frame(gene_name = gene_name,
+                            MYC_high = MYC_high,
+                            MYC_low = MYC_low,
+                            p_value = p_value)
+    
+      # Append to gene_results
+      gene_results <- rbind(gene_results, temp_df)
+    }
+
+    # For this gene, keep only the row with the lowest p_value
+    gene_results <- gene_results[which.min(gene_results$p_value),]
+
+    # Append to overall results
+    results_df <- rbind(results_df, gene_results)
+  }
+
+  # Return the results
+  return(results_df)
+}
+
+```
+
+```{r}
+genes_to_analyze <- c("TPT1-AS1", "ZNF525", "CHROMR", "PAX8-AS1", "AC005476.2", "LINC00888", "GARS1-DT", "LERFS")
+all_results <- plot_ORF_counts(dds, ref_table, genes_to_analyze)
+```
+
+```{r}
+# Order by p-value
+all_results <- all_results[order(all_results$p_value),]
+
+# Reshape the data into a longer format
+all_results_long <- all_results %>%
+  select(gene_name, MYC_high, MYC_low) %>%
+  gather(key = "condition", value = "count", MYC_high, MYC_low)
+
+
+write.csv(all_results, "riboseq/results/tables/tophits_Psite_counts_summary.csv")
+```
+
+### Step 4: Plot the Bar Plot
+
+```{r}
+library(ggplot2)
+library(RColorBrewer)
+
+# Plot the combined bar plot with bars side by side
+p <- ggplot(all_results_long, aes(x = factor(gene_name, levels = all_results$gene_name), y = count, fill = condition)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  scale_fill_brewer(palette = "Set1") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(x = "Gene Name", y = "P-site counts", title = "Comparison of MYC High vs MYC Low")
+
+# Add p-values as annotations above the bars
+for (i in 1:nrow(all_results)) {
+  p <- p + annotate("text", x = i, y = max(all_results$MYC_high[i], all_results$MYC_low[i]) * 1.1, label = sprintf("p = %.4f", all_results$p_value[i]), vjust = -0.5, size = 3)
+}
+
+# Display the plot
+p + theme_classic()
+```
+
+
+```{r}
+individual_results <- data.frame()
+
+# Loop over all genes
+for (gene_string in genes_to_analyze) {
+  # Get a vector of all ORF IDs that belong to the gene of interest
+  orf_ids <- ref_table$orf_id[grepl(gene_string, ref_table$gene_name)]
+
+  # Loop over all ORF IDs
+  for (orf_id in orf_ids) {
+    # Get gene_name for the current ORF
+    gene_name <- ref_table$gene_name[ref_table$orf_id == orf_id]
+
+    # Get the counts for each individual sample, including the sample ID
+    cts <- plotCounts(dds = dds, gene = orf_id, intgroup = c("MYC.group", "Sample_ID"), returnData = T, normalized = T)
+
+    # Perform a t-test for this ORF and get the p-value
+
+    # Create a temporary data frame to store the results
+    temp_df <- data.frame(gene_name = gene_name,
+                          orf_id = orf_id,
+                          MYC_status = cts$MYC.group,
+                          sampleID = cts$Sample_ID, # Include the sample ID
+                          count = cts$count)
+    # Append to individual_results
+    individual_results <- rbind(individual_results, temp_df)
+  }
+}
+
+write.csv(individual_results, "riboseq/results/tables/tophits_Psite_counts_long.csv")
+
+```
+
+```{r}
+library(dplyr)
+
+# Group by ORF ID and MYC status, and calculate the average count for each group
+average_counts <- individual_results %>%
+  group_by(orf_id, MYC_status) %>%
+  summarise(average_count = mean(count)) %>%
+  ungroup()
+
+# Pivot the data to have separate columns for MYC high and MYC low
+average_counts_wide <- average_counts %>%
+  pivot_wider(names_from = MYC_status, values_from = average_count, names_prefix = "average_")
+
+# View the table with average counts
+average_counts_wide
+```
+```{r}
+# Calculate the p-value for each ORF by performing a t-test between MYC high and MYC low
+p_values_summary <- individual_results %>%
+  group_by(orf_id) %>%
+  summarise(p_value = t.test(count[MYC_status == "MYC high"], count[MYC_status == "MYC low"])$p.value) %>%
+  ungroup()
+
+# Merge the p-values with the average counts
+summary_table <- left_join(average_counts_wide, p_values_summary, by = "orf_id")
+
+# Add gene names to the summary table
+summary_table <- left_join(summary_table, distinct(select(individual_results, orf_id, gene_name)), by = "orf_id")
+
+# View the summary table
+summary_table
+
+write.csv(summary_table, "riboseq/results/results/tophits_Psite_counts_summary.csv")
+```
+
+```{r}
+get_ORF_counts <- function(dds, ref_table, genes) {
+  # Initialize a data frame to collect results
+  results_df <- data.frame()
+
+  # Loop over all genes
+  for (gene_string in genes) {
+    # Get a vector of all ORF IDs that belong to the gene of interest
+    orf_ids <- ref_table$orf_id[grepl(gene_string, ref_table$gene_name)]
+
+    # Loop over all ORF IDs and gather results
+    for (orf_id in orf_ids) {
+      # Get gene_name for the current ORF
+      gene_name <- ref_table$gene_name[ref_table$orf_id == orf_id]
+
+      # Get the counts for each individual sample
+      cts <- plotCounts(dds = dds, gene = orf_id, intgroup = c("MYC.group", "Sample_ID"), returnData = T, normalized = T)
+
+      # Create a temporary data frame to store the results
+      temp_df <- data.frame(gene_name = gene_name,
+                            orf_id = orf_id,
+                            MYC_status = cts$MYC.group,
+                            sampleID = cts$Sample_ID,
+                            count = cts$count)
+
+      # Append to overall results
+      results_df <- rbind(results_df, temp_df)
+    }
+  }
+
+  # Return the results
+  return(results_df)
+}
+
+# List of genes to analyze
+genes_to_analyze <- c("TPT1-AS1", "ZNF525", "CHROMR", "PAX8-AS1", "AC005476.2", "LINC00888", "GARS1-DT", "LERFS")
+
+# Call the function with the list of genes
+all_ORF_counts <- get_ORF_counts(dds, ref_table, genes_to_analyze)
+
+write.csv(all_ORF_counts, "riboseq/results/tables/tophits_Psite_counts_long.csv")
+
+```

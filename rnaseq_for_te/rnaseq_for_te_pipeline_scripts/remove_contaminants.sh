@@ -8,6 +8,10 @@ set -uo pipefail  # Enable strict mode
 module load bowtie2/${bowtie2_version}
 module load samtools/${samtools_version}
 
+# Load files
+mapfile -t r1_files < r1_files.txt
+mapfile -t sample_ids < sample_ids.txt
+
 # Get input file and sample ID
 r1_file="${r1_files[$((SLURM_ARRAY_TASK_ID-1))]}"
 sample_id="${sample_ids[$((SLURM_ARRAY_TASK_ID-1))]}"

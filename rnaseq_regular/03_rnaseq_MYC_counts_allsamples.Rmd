@@ -1,0 +1,178 @@
+---
+title: "MBL tissues RNAseq clustering (top 4 and bottom 4 MYC-expressing samples)"
+output: html_notebook
+---
+
+# Introduction
+
+This notebook focuses on the analysis of RNA sequencing data from Medulloblastoma tissue samples. The goal is to identify differentially expressed genes and perform clustering based on MYC expression levels. The notebook involves loading necessary libraries, data preprocessing, running DESeq2 analysis, PCA visualization, identifying cluster-defining genes, and creating heatmaps.
+
+Outputs:
+- Plot used for Figure S1J
+
+
+# 1. Setup and Libraries
+
+First, we load the required libraries for the analysis: stringr, tidyverse, DESeq2, RColorBrewer, fgsea, msigdb, ExperimentHub, GSEABase, org.Hs.eg.db, AnnotationDbi, and egg.
+
+```{r setup, include = FALSE}
+library(stringr)
+library(tidyverse)
+library(DESeq2)
+library(RColorBrewer)
+library(fgsea)
+library(msigdb)
+library(ExperimentHub)
+library(GSEABase)
+library(org.Hs.eg.db)
+library(AnnotationDbi)
+library(egg)
+```
+
+# 2. Load and pre-process Data
+
+## 2.1. Load and pre-process RNA-seq counts
+
+We load the RNAseq counts table and fix sample column names. We also remove unnecessary metadata columns and write the processed data to a CSV file for further analysis.
+
+```{r}
+# Load RNAseq counts table
+canonical_RNA_counts_all <- read.table("/rnaseq_regular/data/processed/featurecounts/medullo_allsamples.counts", check.names = F)
+
+# Fix sample column names
+colnames(canonical_RNA_counts_all) <- sapply(basename(colnames(canonical_RNA_counts_all)),
+                                             function(x)
+                                               gsub(".Aligned.sortedByCoord.out.bam", "", x)) 
+
+# Remove unnecessary metadata columns
+canonical_RNA_counts_all <- canonical_RNA_counts_all %>%
+  dplyr::select(6:ncol(.))
+
+# Now we've generated the same table as in S1B
+```
+
+## 2.2. Load and process metadata
+
+We load the metadata table associated with the RNA sequencing data. We filter samples with both RNAseq and riboseq data and select metadata for tissue samples. We also convert specific columns to factors and set rownames for easy indexing.
+
+```{r}
+# Load metadata
+sample_metadata <- readxl::read_xlsx("Table_S1.xlsx", sheet = 1, col_names = T, skip = 2, .name_repair = "universal")
+
+# Filter samples with both RNAseq and riboseq data
+sample_metadata_complete <- sample_metadata[which(
+  !is.na(sample_metadata$RNASeq_file_names) &
+    !is.na(sample_metadata$RiboSeq_file_names..final.)), ]
+
+# Extract RNA sample names based on filenames
+sample_metadata_complete <- sample_metadata_complete %>%
+  mutate(rna_name = gsub("_R1.*", "", gsub(";.*", "", .$RNASeq_file_names)))
+
+# Select metadata for cell line samples
+# sample_metadata_complete$MYC.group <- as.factor(sample_metadata_complete$MYC.group)
+
+sample_metadata_complete[which(sample_metadata_complete$Molecular.subgroup == "Group 4"), ]$Molecular.subgroup = "G4" 
+sample_metadata_complete[which(sample_metadata_complete$Molecular.subgroup == "Group 3"), ]$Molecular.subgroup = "G3" 
+
+sample_metadata_complete$Molecular.subgroup <- as.factor(sample_metadata_complete$Molecular.subgroup)
+
+rownames(sample_metadata_complete) <- sample_metadata_complete$Sample_ID
+```
+
+## 2.3. Match RNA-seq counts and metadata
+
+```{r}
+# Match RNA-seq counts columns to metadata rows
+match_counts <- unique(str_extract(sample_metadata_complete$RNASeq_file_names, str_c(colnames(canonical_RNA_counts_all), collapse = "|")))
+canonical_RNA_counts <- canonical_RNA_counts_all[, match_counts]
+
+# Find matching metadata
+metadata_matches <- grep(paste(match_counts, collapse = "|"), sample_metadata_complete$RNASeq_file_names)
+sample_metadata_complete <- sample_metadata_complete[metadata_matches, ]
+colnames(canonical_RNA_counts) <- sample_metadata_complete$Sample_ID
+```
+
+# 3. Differential expression analysis
+
+## 3.1. Run DESeq2 to select top and bottom MYC expressing samples
+```{r}
+# Run DESeq2
+dds <- DESeqDataSetFromMatrix(countData = canonical_RNA_counts, colData = sample_metadata_complete, design = ~ MYC_status)
+dds <- DESeq(dds)
+
+mat_dds <- counts(dds, normalized = T)
+
+# Transform DESeq2 output
+vsd <- vst(dds, blind = F)
+
+# Store dds counts and vsd counts in matrices
+mat_vsd <- assay(vsd)
+MYC_vsd <- mat_vsd["ENSG00000136997", ]
+```
+
+```{r}
+# Select MYC expression values
+MYC_dds <- mat_dds["ENSG00000136997", ]
+MYC_dds_df <- data.frame("Sample_ID" = names(MYC_dds), 
+                         MYC_lvl = MYC_dds)
+
+# Sort the dataframe based on MYC expression
+MYC_dds_df <- MYC_dds_df[order(MYC_dds_df$MYC_lvl), ]
+
+# Add MYC expression to metadata
+sample_metadata_complete <- left_join(sample_metadata_complete, MYC_dds_df)
+```
+
+```{r}
+# Generate the colors
+set1_colors <- brewer.pal(n = length(unique(sample_metadata_complete$Sample_Type)), name = "Set1")
+set2_colors <- brewer.pal(n = length(unique(sample_metadata_complete$MYC_status)), name = "Set2")
+
+# Create the color mapping for the labels
+label_colors <- setNames(set1_colors, sort(unique(sample_metadata_complete$Sample_Type)))
+label_colors_ordered <- label_colors[sample_metadata_complete$Sample_Type]
+label_colors_ordered <- label_colors_ordered[order(sample_metadata_complete$MYC_lvl, decreasing = TRUE)]
+
+# Create the fill mapping for the bars
+fill_colors <- setNames(set2_colors, sort(unique(sample_metadata_complete$MYC_status)))
+
+# Create a vector of new labels
+new_labels <- c("Unknown" = "Unknown", "MYC_amp" = "MYC Amplified", "not_amp" = "Not Amplified", "MYC_gain" = "MYC Gain")
+
+
+ggplot(sample_metadata_complete, aes(y = MYC_lvl, x = reorder(Sample_ID, -MYC_lvl), fill = MYC_status)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = "", 
+                y = -Inf), 
+            size = 0) +
+  geom_point(aes(y = -Inf, 
+                 color = Sample_Type), 
+             size = 0) +
+  scale_color_manual(name = "Sample Type",
+                     values = label_colors,
+                     guide = guide_legend(override.aes = list(size = 4))) +
+  scale_fill_manual(name = "MYC status",
+                    values = fill_colors,
+                    labels = new_labels) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1))) +
+
+  theme_classic() +
+  labs(x = "Sample", y = "Norm. MYC RNA-seq counts", title = "Primary tissues and cell lines with matching Ribo-seq data") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, color = label_colors_ordered))
+
+ggsave(filename = "/rnaseq_regular/results/plots/MYC_lvl_tissues_cell_lines.pdf", width = unit(7, "inch"), height=unit(5, "inch"))
+
+```
+
+```{r}
+ggplot(sample_metadata_complete, aes(y = MYC_lvl, x = reorder(Sample_ID, -MYC_lvl), fill = )) +
+  geom_bar(stat = "identity") +
+  scale_y_continuous(trans = "log2") +
+  theme_classic() +
+  labs(x = "Sample", y = "MYC level (log2)", title = "RNA-seq MYC expression, normalized") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+```
+
+
+
+
